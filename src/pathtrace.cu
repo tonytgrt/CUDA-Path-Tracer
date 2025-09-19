@@ -49,6 +49,7 @@ struct is_terminated {
     }
 };
 
+
 __host__ __device__
 thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int depth)
 {
@@ -242,7 +243,7 @@ __global__ void computeIntersections(
 // Note that this shader does NOT do a BSDF evaluation!
 // Your shaders should handle that - this can allow techniques such as
 // bump mapping.
-__global__ void shadeFakeMaterial(
+__global__ void shadeMaterial(
     int iter,
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
@@ -250,62 +251,64 @@ __global__ void shadeFakeMaterial(
     Material* materials)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < num_paths)
+    if (idx >= num_paths) return;
+
+    // Skip already terminated paths
+    if (pathSegments[idx].remainingBounces <= 0) {
+        return;
+    }
+
+    ShadeableIntersection intersection = shadeableIntersections[idx];
+
+    if (intersection.t > 0.0f) // Ray hit something
     {
-        ShadeableIntersection intersection = shadeableIntersections[idx];
-        if (intersection.t > 0.0f) // if the intersection exists...
-        {
-          // Set up the RNG
-          // LOOK: this is how you use thrust's RNG! Please look at
-          // makeSeededRandomEngine as well.
-            thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, 0);
-            thrust::uniform_real_distribution<float> u01(0, 1);
+        // Set up RNG with proper seed
+        thrust::default_random_engine rng = makeSeededRandomEngine(
+            iter, idx, pathSegments[idx].remainingBounces);
+        thrust::uniform_real_distribution<float> u01(0, 1);
 
-            Material material = materials[intersection.materialId];
-            glm::vec3 materialColor = material.color;
+        Material material = materials[intersection.materialId];
+        glm::vec3 materialColor = material.color;
 
-            // If the material indicates that the object was a light, "light" the ray
-            if (material.emittance > 0.0f) {
-                pathSegments[idx].color *= (materialColor * material.emittance);
-            }
-            // Otherwise, do some pseudo-lighting computation. This is actually more
-            // like what you would expect from shading in a rasterizer like OpenGL.
-            // TODO: replace this! you should be able to start with basically a one-liner
-            else {
-                // Ideal diffuse scattering
-				glm::vec3 bsdf = materialColor / glm::pi<float>();
-
-				glm::vec3 woW = -pathSegments[idx].ray.direction;
-				glm::vec3 wiW = calculateRandomDirectionInHemisphere(intersection.surfaceNormal, rng);
-                pathSegments[idx].remainingBounces--;
-
-				float pdf = glm::dot(intersection.surfaceNormal, wiW) / glm::pi<float>();
-
-                pathSegments[idx].color *= bsdf * glm::dot(intersection.surfaceNormal, wiW) / pdf;
-
-                if (pathSegments[idx].remainingBounces <= 0) {
-                    return;
-				}
-
-				pathSegments[idx].ray.origin = getPointOnRay(pathSegments[idx].ray, intersection.t) + intersection.surfaceNormal * 0.001f;
-				pathSegments[idx].ray.direction = wiW;
-
-				
-
-                //float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f));
-                //pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f;
-                //pathSegments[idx].color *= u01(rng); // apply some noise because why not
-            }
-
-            // If there was no intersection, color the ray black.
-            // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
-            // used for opacity, in which case they can indicate "no opacity".
-            // This can be useful for post-processing and image compositing.
+        // Handle light sources
+        if (material.emittance > 0.0f) {
+            // Ray hit a light - accumulate emission and terminate
+            pathSegments[idx].color *= (materialColor * material.emittance);
+            pathSegments[idx].remainingBounces = 0;
+            return;
         }
-        else {
+
+        // Handle diffuse materials
+        // Decrement bounces first
+        pathSegments[idx].remainingBounces--;
+
+        // Check if we should continue
+        if (pathSegments[idx].remainingBounces <= 0) {
+            // Maximum depth reached without hitting light
+            // The path contributes nothing (black)
             pathSegments[idx].color = glm::vec3(0.0f);
-			pathSegments[idx].remainingBounces = 0;
+            return;
         }
+
+        // Generate new ray direction using cosine-weighted sampling
+        glm::vec3 wiW = calculateRandomDirectionInHemisphere(
+            intersection.surfaceNormal, rng);
+
+        // For cosine-weighted sampling with Lambertian BRDF:
+        // The math simplifies to just multiplying by the material color
+        pathSegments[idx].color *= materialColor;
+
+        // Set up the new ray
+        glm::vec3 intersectionPoint = pathSegments[idx].ray.origin +
+            pathSegments[idx].ray.direction * intersection.t;
+        pathSegments[idx].ray.origin = intersectionPoint +
+            intersection.surfaceNormal * 0.001f;
+        pathSegments[idx].ray.direction = wiW;
+    }
+    else {
+        // Ray missed all geometry
+        pathSegments[idx].color = glm::vec3(0.0f);
+        pathSegments[idx].remainingBounces = 0;
     }
 }
 
@@ -318,6 +321,20 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
     {
         PathSegment iterationPath = iterationPaths[index];
         image[iterationPath.pixelIndex] += iterationPath.color;
+    }
+}
+
+__global__ void gatherTerminatedPaths(int nPaths, glm::vec3* image, PathSegment* paths)
+{
+    int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+    if (index < nPaths)
+    {
+        PathSegment path = paths[index];
+        // Only add to image if this path is terminated
+        if (path.remainingBounces == 0) {
+            image[path.pixelIndex] += path.color;
+        }
     }
 }
 
@@ -410,7 +427,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
 
-        shadeFakeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
+        shadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
             iter,
             num_paths,
             dev_intersections,
@@ -419,14 +436,24 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         );
 
 
+        dim3 numBlocksGather = (num_paths + blockSize1d - 1) / blockSize1d;
+        gatherTerminatedPaths << <numBlocksGather, blockSize1d >> > (
+            num_paths,
+            dev_image,
+            dev_paths
+            );
+        checkCUDAError("gather terminated paths");
+
+        // --- Stream Compaction Stage ---
         PathSegment* new_end = thrust::remove_if(thrust::device,
             dev_paths,
             dev_paths + num_paths,
             is_terminated());
-        
+
         int paths_before = num_paths;
         num_paths = new_end - dev_paths;
 
+        // Check termination conditions
         if (num_paths == 0 || depth >= traceDepth) {
             iterationComplete = true;
         }

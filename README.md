@@ -3,11 +3,11 @@ CUDA Path Tracer
 
 **University of Pennsylvania, CIS 565: GPU Programming and Architecture, Project 3**
 
-* (TODO) YOUR NAME HERE
-* Tested on: (TODO) Windows 22, i7-2222 @ 2.22GHz 22GB, GTX 222 222MB (Moore 2222 Lab)
+* Yiding Tian
+  *  [LinkedIn](https://linkedin.com/in/ytian1109), [Github](https://github.com/tonytgrt)
+* Tested on: Windows 11 24H2, i7-13900H @ 4.1GHz, 32GB RAM @ 4800Mhz, MSI Shadow RTX 5080 @ 3200MHz (OC +400MHz) 16GB VRAM @ 16801MHz (OC +2000MHz) Driver 581.15, Personal Laptop with External Desktop GPU via NVMe connector (PCIe 4.0 x4 Protocol)
 
-### (TODO: Your README)
+### If you are checking out this repo, the path tracer is still a WIP! It will be finished at Oct 1, 2025
 
-*DO NOT* leave the README to the last minute! It is a crucial part of the
-project, and we will not be able to grade you without a good README.
-
+### WIP Render
+![](/img/wip-1.png)
