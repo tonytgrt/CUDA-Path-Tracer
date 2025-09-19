@@ -15,6 +15,14 @@ enum GeomType
     CUBE
 };
 
+enum MaterialType
+{
+    DIFFUSE,
+    SPECULAR,
+    REFRACTIVE,
+    EMITTING
+};
+
 struct Ray
 {
     glm::vec3 origin;
@@ -45,6 +53,7 @@ struct Material
     float hasRefractive;
     float indexOfRefraction;
     float emittance;
+	enum MaterialType type;
 };
 
 struct Camera

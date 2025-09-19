@@ -246,12 +246,10 @@ __global__ void computeIntersections(
 __host__ __device__ void shadeDiffuse(
     PathSegment& pathSegment,
     const ShadeableIntersection& intersection,
-    glm::vec3 materialColor
+    glm::vec3 materialColor,
+    thrust::default_random_engine rng
     ) {
-    // Set up RNG with proper seed
-    thrust::default_random_engine rng = makeSeededRandomEngine(
-        0, pathSegment.pixelIndex, pathSegment.remainingBounces);
-    thrust::uniform_real_distribution<float> u01(0, 1);
+    
 
     // Generate new ray direction using cosine-weighted sampling
     glm::vec3 wiW = calculateRandomDirectionInHemisphere(
@@ -314,27 +312,23 @@ __global__ void shadeMaterial(
             return;
         }
 
-		shadeDiffuse(pathSegments[idx], intersection, materialColor);
+        // Set up RNG with proper seed
+        thrust::default_random_engine rng = makeSeededRandomEngine(
+            iter, idx, pathSegments[idx].remainingBounces);
+        thrust::uniform_real_distribution<float> u01(0, 1);
 
-        //// Set up RNG with proper seed
-        //thrust::default_random_engine rng = makeSeededRandomEngine(
-        //    iter, idx, pathSegments[idx].remainingBounces);
-        //thrust::uniform_real_distribution<float> u01(0, 1);
+		MaterialType mType = material.type;
 
-        //// Generate new ray direction using cosine-weighted sampling
-        //glm::vec3 wiW = calculateRandomDirectionInHemisphere(
-        //    intersection.surfaceNormal, rng);
+        switch (mType) {
+        case DIFFUSE:
+            shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
+            break;
 
-        //// For cosine-weighted sampling with Lambertian BRDF:
-        //// The math simplifies to just multiplying by the material color
-        //pathSegments[idx].color *= materialColor;
+        default:
+            shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
+            break;
+        }
 
-        //// Set up the new ray
-        //glm::vec3 intersectionPoint = pathSegments[idx].ray.origin +
-        //    pathSegments[idx].ray.direction * intersection.t;
-        //pathSegments[idx].ray.origin = intersectionPoint +
-        //    intersection.surfaceNormal * 0.001f;
-        //pathSegments[idx].ray.direction = wiW;
     }
     else {
         // Ray missed all geometry
