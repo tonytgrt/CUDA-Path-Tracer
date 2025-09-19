@@ -243,6 +243,33 @@ __global__ void computeIntersections(
 // Note that this shader does NOT do a BSDF evaluation!
 // Your shaders should handle that - this can allow techniques such as
 // bump mapping.
+__host__ __device__ void shadeDiffuse(
+    PathSegment& pathSegment,
+    const ShadeableIntersection& intersection,
+    glm::vec3 materialColor
+    ) {
+    // Set up RNG with proper seed
+    thrust::default_random_engine rng = makeSeededRandomEngine(
+        0, pathSegment.pixelIndex, pathSegment.remainingBounces);
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    // Generate new ray direction using cosine-weighted sampling
+    glm::vec3 wiW = calculateRandomDirectionInHemisphere(
+        intersection.surfaceNormal, rng);
+
+    // For cosine-weighted sampling with Lambertian BRDF:
+    // The math simplifies to just multiplying by the material color
+    pathSegment.color *= materialColor;
+
+    // Set up the new ray
+    glm::vec3 intersectionPoint = pathSegment.ray.origin +
+        pathSegment.ray.direction * intersection.t;
+    pathSegment.ray.origin = intersectionPoint +
+        intersection.surfaceNormal * 0.001f;
+    pathSegment.ray.direction = wiW;
+}
+
+
 __global__ void shadeMaterial(
     int iter,
     int num_paths,
@@ -262,10 +289,7 @@ __global__ void shadeMaterial(
 
     if (intersection.t > 0.0f) // Ray hit something
     {
-        // Set up RNG with proper seed
-        thrust::default_random_engine rng = makeSeededRandomEngine(
-            iter, idx, pathSegments[idx].remainingBounces);
-        thrust::uniform_real_distribution<float> u01(0, 1);
+        
 
         Material material = materials[intersection.materialId];
         glm::vec3 materialColor = material.color;
@@ -290,20 +314,27 @@ __global__ void shadeMaterial(
             return;
         }
 
-        // Generate new ray direction using cosine-weighted sampling
-        glm::vec3 wiW = calculateRandomDirectionInHemisphere(
-            intersection.surfaceNormal, rng);
+		shadeDiffuse(pathSegments[idx], intersection, materialColor);
 
-        // For cosine-weighted sampling with Lambertian BRDF:
-        // The math simplifies to just multiplying by the material color
-        pathSegments[idx].color *= materialColor;
+        //// Set up RNG with proper seed
+        //thrust::default_random_engine rng = makeSeededRandomEngine(
+        //    iter, idx, pathSegments[idx].remainingBounces);
+        //thrust::uniform_real_distribution<float> u01(0, 1);
 
-        // Set up the new ray
-        glm::vec3 intersectionPoint = pathSegments[idx].ray.origin +
-            pathSegments[idx].ray.direction * intersection.t;
-        pathSegments[idx].ray.origin = intersectionPoint +
-            intersection.surfaceNormal * 0.001f;
-        pathSegments[idx].ray.direction = wiW;
+        //// Generate new ray direction using cosine-weighted sampling
+        //glm::vec3 wiW = calculateRandomDirectionInHemisphere(
+        //    intersection.surfaceNormal, rng);
+
+        //// For cosine-weighted sampling with Lambertian BRDF:
+        //// The math simplifies to just multiplying by the material color
+        //pathSegments[idx].color *= materialColor;
+
+        //// Set up the new ray
+        //glm::vec3 intersectionPoint = pathSegments[idx].ray.origin +
+        //    pathSegments[idx].ray.direction * intersection.t;
+        //pathSegments[idx].ray.origin = intersectionPoint +
+        //    intersection.surfaceNormal * 0.001f;
+        //pathSegments[idx].ray.direction = wiW;
     }
     else {
         // Ray missed all geometry
