@@ -14,6 +14,8 @@
 #include "utilities.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "common.h"
+#include "efficient.h"
 
 #define ERRORCHECK 1
 
@@ -265,10 +267,33 @@ __global__ void shadeFakeMaterial(
             // like what you would expect from shading in a rasterizer like OpenGL.
             // TODO: replace this! you should be able to start with basically a one-liner
             else {
-                float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f));
-                pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f;
-                pathSegments[idx].color *= u01(rng); // apply some noise because why not
+                // Ideal diffuse scattering
+				glm::vec3 bsdf = materialColor / glm::pi<float>();
+
+				glm::vec3 woW = -pathSegments[idx].ray.direction;
+				glm::vec3 wiW = calculateRandomDirectionInHemisphere(intersection.surfaceNormal, rng);
+                pathSegments[idx].remainingBounces--;
+
+				float pdf = glm::dot(intersection.surfaceNormal, wiW) / glm::pi<float>();
+
+                pathSegments[idx].color *= bsdf * glm::dot(intersection.surfaceNormal, wiW) / pdf;
+
+                if (pathSegments[idx].remainingBounces <= 0) {
+                    return;
+				}
+
+				pathSegments[idx].ray.origin = getPointOnRay(pathSegments[idx].ray, intersection.t) + intersection.surfaceNormal * 0.001f;
+				pathSegments[idx].ray.direction = wiW;
+
+				
+
+                //float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f));
+                //pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f;
+                //pathSegments[idx].color *= u01(rng); // apply some noise because why not
             }
+
+            // Generate new ray
+
             // If there was no intersection, color the ray black.
             // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
             // used for opacity, in which case they can indicate "no opacity".
@@ -276,6 +301,7 @@ __global__ void shadeFakeMaterial(
         }
         else {
             pathSegments[idx].color = glm::vec3(0.0f);
+			pathSegments[idx].remainingBounces = 0;
         }
     }
 }
@@ -388,7 +414,15 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_paths,
             dev_materials
         );
-        iterationComplete = true; // TODO: should be based off stream compaction results.
+
+
+		//TODO: Stream compact away terminated paths.
+        
+
+        if (dev_paths == dev_path_end) {
+            iterationComplete = true;
+        }
+        iterationComplete = true;
 
         if (guiData != NULL)
         {
