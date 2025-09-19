@@ -6,6 +6,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/random.h>
 #include <thrust/remove.h>
+#include <thrust/device_ptr.h>
 
 #include "sceneStructs.h"
 #include "scene.h"
@@ -14,8 +15,6 @@
 #include "utilities.h"
 #include "intersections.h"
 #include "interactions.h"
-#include "common.h"
-#include "efficient.h"
 
 #define ERRORCHECK 1
 
@@ -43,6 +42,12 @@ void checkCUDAErrorFn(const char* msg, const char* file, int line)
     exit(EXIT_FAILURE);
 #endif // ERRORCHECK
 }
+
+struct is_terminated {
+    __host__ __device__ bool operator()(const PathSegment& path) {
+        return path.remainingBounces <= 0;
+    }
+};
 
 __host__ __device__
 thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int depth)
@@ -292,8 +297,6 @@ __global__ void shadeFakeMaterial(
                 //pathSegments[idx].color *= u01(rng); // apply some noise because why not
             }
 
-            // Generate new ray
-
             // If there was no intersection, color the ray black.
             // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
             // used for opacity, in which case they can indicate "no opacity".
@@ -416,13 +419,17 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         );
 
 
-		//TODO: Stream compact away terminated paths.
+        PathSegment* new_end = thrust::remove_if(thrust::device,
+            dev_paths,
+            dev_paths + num_paths,
+            is_terminated());
         
+        int paths_before = num_paths;
+        num_paths = new_end - dev_paths;
 
-        if (dev_paths == dev_path_end) {
+        if (num_paths == 0 || depth >= traceDepth) {
             iterationComplete = true;
         }
-        iterationComplete = true;
 
         if (guiData != NULL)
         {
