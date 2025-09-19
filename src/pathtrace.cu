@@ -267,6 +267,26 @@ __host__ __device__ void shadeDiffuse(
     pathSegment.ray.direction = wiW;
 }
 
+__host__ __device__ void shadeSpecular(
+    PathSegment& pathSegment,
+    const ShadeableIntersection& intersection,
+    glm::vec3 materialColor
+    ) {
+    // Perfectly specular reflection direction
+    glm::vec3 normal = intersection.surfaceNormal;
+    glm::vec3 incident = pathSegment.ray.direction;
+    glm::vec3 reflected = glm::normalize(incident - 2.0f * glm::dot(incident, normal) * normal);
+    // For perfect specular reflection with ideal mirror BRDF:
+    // The math simplifies to just multiplying by the material color
+    pathSegment.color *= materialColor;
+    // Set up the new ray
+    glm::vec3 intersectionPoint = pathSegment.ray.origin +
+        pathSegment.ray.direction * intersection.t;
+    pathSegment.ray.origin = intersectionPoint +
+        intersection.surfaceNormal * 0.001f;
+    pathSegment.ray.direction = reflected;
+}
+
 
 __global__ void shadeMaterial(
     int iter,
@@ -323,6 +343,10 @@ __global__ void shadeMaterial(
         case DIFFUSE:
             shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
             break;
+
+		case SPECULAR:
+			shadeSpecular(pathSegments[idx], intersection, materialColor);
+			break;
 
         default:
             shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
