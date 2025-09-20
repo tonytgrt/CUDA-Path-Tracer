@@ -271,7 +271,8 @@ __host__ __device__ void shadeSpecular(
     PathSegment& pathSegment,
     const ShadeableIntersection& intersection,
     glm::vec3 materialColor
-    ) {
+    ) 
+{
     // Perfectly specular reflection direction
     glm::vec3 normal = intersection.surfaceNormal;
     glm::vec3 incident = pathSegment.ray.direction;
@@ -285,6 +286,16 @@ __host__ __device__ void shadeSpecular(
     pathSegment.ray.origin = intersectionPoint +
         intersection.surfaceNormal * 0.001f;
     pathSegment.ray.direction = reflected;
+}
+
+__host__ __device__ void shadeRefractive(
+    PathSegment& pathSegment,
+    const ShadeableIntersection& intersection,
+    glm::vec3 materialColor,
+    float ior
+)
+{
+	//TODO : Implement Refraction
 }
 
 
@@ -346,6 +357,10 @@ __global__ void shadeMaterial(
 
 		case SPECULAR:
 			shadeSpecular(pathSegments[idx], intersection, materialColor);
+			break;
+
+		case REFRACTIVE:
+			shadeRefractive(pathSegments[idx], intersection, materialColor, material.indexOfRefraction);
 			break;
 
         default:
