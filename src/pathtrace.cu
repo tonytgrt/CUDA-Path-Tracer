@@ -288,14 +288,71 @@ __host__ __device__ void shadeSpecular(
     pathSegment.ray.direction = reflected;
 }
 
+__host__ __device__ float shlickFresnel(float cosTheta, float ior) {
+    float r0 = (1.0f - ior) / (1.0f + ior);
+    r0 = r0 * r0;
+    return r0 + (1.0f - r0) * pow((1.0f - cosTheta), 5.0f);
+}
+
 __host__ __device__ void shadeRefractive(
     PathSegment& pathSegment,
     const ShadeableIntersection& intersection,
     glm::vec3 materialColor,
-    float ior
+    float ior,
+	thrust::default_random_engine& rng
 )
 {
-	//TODO : Implement Refraction
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+	glm::vec3 normal = intersection.surfaceNormal;
+	glm::vec3 incident = glm::normalize(pathSegment.ray.direction);
+
+	float cosTheta = glm::dot(incident, normal);
+	bool entering = cosTheta < 0.0f;
+
+    float etaI, etaT;
+	if (entering) {
+        etaI = 1.0f; // air
+        etaT = ior;
+        cosTheta = -cosTheta; 
+    }
+    else {
+        etaI = ior;
+        etaT = 1.0f; // air
+        normal = -normal;
+    }
+
+	float eta = etaI / etaT;
+
+	float sin2ThetaT = eta * eta * (1.0f - cosTheta * cosTheta);
+
+	glm::vec3 newDirection;
+
+    if (sin2ThetaT > 1.0f) {
+        // Total internal reflection
+		newDirection = glm::normalize(incident - 2.0f * glm::dot(incident, normal) * normal);
+    }
+    else {
+        float cosThetaT = sqrtf(1.0f - sin2ThetaT);
+		float fresnelReflectance = shlickFresnel(entering ? cosTheta : cosThetaT, eta);
+
+        if (u01(rng) < fresnelReflectance) {
+			// Reflect
+			newDirection = glm::reflect(incident, normal);
+        }
+        else {
+			newDirection = glm::normalize(eta * incident + (eta * cosTheta - cosThetaT) * normal);
+        }
+	}
+
+	pathSegment.color *= materialColor;
+
+	// Set up the new ray
+    glm::vec3 intersectionPoint = pathSegment.ray.origin +
+		pathSegment.ray.direction * intersection.t;
+
+    pathSegment.ray.origin = intersectionPoint + newDirection * 0.001f;
+	pathSegment.ray.direction = newDirection;
 }
 
 
@@ -360,7 +417,7 @@ __global__ void shadeMaterial(
 			break;
 
 		case REFRACTIVE:
-			shadeRefractive(pathSegments[idx], intersection, materialColor, material.indexOfRefraction);
+			shadeRefractive(pathSegments[idx], intersection, materialColor, material.indexOfRefraction, rng);
 			break;
 
         default:

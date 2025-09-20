@@ -66,7 +66,12 @@ void Scene::loadFromJSON(const std::string& jsonName)
         {
             const auto& col = p["RGB"];
             newMaterial.color = glm::vec3(col[0], col[1], col[2]);
-			newMaterial.indexOfRefraction = p["IOR"];
+            if (p.contains("IOR")) {
+                newMaterial.indexOfRefraction = p["IOR"];
+            }
+            else {
+                newMaterial.indexOfRefraction = 1.5f;  // Default glass IOR
+            }
             newMaterial.type = REFRACTIVE;
         }
         MatNameToID[name] = materials.size();
