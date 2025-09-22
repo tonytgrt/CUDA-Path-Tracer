@@ -92,10 +92,58 @@ static ShadeableIntersection* dev_intersections = NULL;
 // ...
 static EnvironmentMap dev_environmentMap;
 static glm::vec3* dev_envmap_data = NULL;
+static LightInfo* dev_lights = NULL;
+static int num_lights = 0;
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
     guiData = imGuiData;
+}
+
+// Get the area of a geometry
+__host__ __device__ float getGeomArea(const Geom& geom) {
+    if (geom.type == SPHERE) {
+        float radius = geom.scale.x * 0.5f;
+        return 4.0f * PI * radius * radius;
+    }
+    else if (geom.type == CUBE) {
+        float sx = geom.scale.x;
+        float sy = geom.scale.y;
+        float sz = geom.scale.z;
+        return 2.0f * (sx * sy + sy * sz + sz * sx);
+    }
+    return 1.0f; // Default
+}
+
+void initializeLights(Scene* scene) {
+    // Count emissive objects
+    std::vector<LightInfo> lightInfos;
+    float totalArea = 0.0f;
+
+    for (int i = 0; i < scene->geoms.size(); i++) {
+        int matId = scene->geoms[i].materialid;
+        if (scene->materials[matId].emittance > 0.0f) {
+            LightInfo info;
+            info.geomIdx = i;
+            info.area = getGeomArea(scene->geoms[i]);
+            totalArea += info.area;
+            lightInfos.push_back(info);
+        }
+    }
+
+    // Normalize PDFs
+    for (auto& light : lightInfos) {
+        light.pdf = light.area / totalArea;
+    }
+
+    num_lights = lightInfos.size();
+    if (num_lights > 0) {
+        cudaMalloc(&dev_lights, num_lights * sizeof(LightInfo));
+        cudaMemcpy(dev_lights, lightInfos.data(), num_lights * sizeof(LightInfo),
+            cudaMemcpyHostToDevice);
+    }
+
+    printf("Initialized %d light sources for MIS\n", num_lights);
 }
 
 void pathtraceInit(Scene* scene)
@@ -115,6 +163,9 @@ void pathtraceInit(Scene* scene)
 
     cudaMalloc(&dev_materials, scene->materials.size() * sizeof(Material));
     cudaMemcpy(dev_materials, scene->materials.data(), scene->materials.size() * sizeof(Material), cudaMemcpyHostToDevice);
+
+	// Initialize lights for MIS
+	initializeLights(scene);
 
     cudaMalloc(&dev_intersections, pixelcount * sizeof(ShadeableIntersection));
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
@@ -158,6 +209,11 @@ void pathtraceFree()
     {
         cudaFree(dev_envmap_data);
         dev_envmap_data = NULL;
+    }
+
+    if (dev_lights != NULL) {
+        cudaFree(dev_lights);
+        dev_lights = NULL;
     }
 
     checkCUDAError("pathtraceFree");
@@ -312,6 +368,71 @@ __device__ glm::vec3 sampleEnvironmentMap(const glm::vec3& direction, const Envi
     return result;
 }
 
+// ===== HELPER FUNCTIONS FOR MIS =====
+
+// Power heuristic for MIS (balance heuristic with beta=2)
+__device__ float powerHeuristic(float pdfA, float pdfB) {
+    float pdfA2 = pdfA * pdfA;
+    float pdfB2 = pdfB * pdfB;
+    return pdfA2 / (pdfA2 + pdfB2);
+}
+
+// Sample a point on a sphere
+__device__ glm::vec3 sampleSphere(const Geom& geom, thrust::default_random_engine& rng) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    float u = u01(rng);
+    float v = u01(rng);
+
+    float theta = 2.0f * PI * u;
+    float phi = acos(1.0f - 2.0f * v);
+
+    float radius = geom.scale.x * 0.5f; // Assuming uniform scale for sphere
+
+    glm::vec3 local(
+        radius * sin(phi) * cos(theta),
+        radius * sin(phi) * sin(theta),
+        radius * cos(phi)
+    );
+
+    return glm::vec3(geom.transform * glm::vec4(local, 1.0f));
+}
+
+// Sample a point on a box
+__device__ glm::vec3 sampleBox(const Geom& geom, thrust::default_random_engine& rng) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    // Choose which face to sample
+    float faceChoice = u01(rng) * 6.0f;
+    int face = (int)faceChoice;
+
+    float u = u01(rng) - 0.5f;
+    float v = u01(rng) - 0.5f;
+
+    glm::vec3 local;
+    switch (face) {
+    case 0: local = glm::vec3(0.5f, u, v); break;   // +X
+    case 1: local = glm::vec3(-0.5f, u, v); break;  // -X
+    case 2: local = glm::vec3(u, 0.5f, v); break;   // +Y
+    case 3: local = glm::vec3(u, -0.5f, v); break;  // -Y
+    case 4: local = glm::vec3(u, v, 0.5f); break;   // +Z
+    default: local = glm::vec3(u, v, -0.5f); break; // -Z
+    }
+
+    return glm::vec3(geom.transform * glm::vec4(local, 1.0f));
+}
+
+// Sample a point on any light source
+__device__ glm::vec3 sampleLight(const Geom& geom, thrust::default_random_engine& rng) {
+    if (geom.type == SPHERE) {
+        return sampleSphere(geom, rng);
+    }
+    else if (geom.type == CUBE) {
+        return sampleBox(geom, rng);
+    }
+    return geom.translation; // Fallback to center
+}
+
 // ===== SHADING HELPER FUNCTIONS =====
 __host__ __device__ void shadeDiffuse(
     PathSegment& pathSegment,
@@ -334,6 +455,119 @@ __host__ __device__ void shadeDiffuse(
         pathSegment.ray.direction * intersection.t;
     pathSegment.ray.origin = intersectionPoint +
         intersection.surfaceNormal * 0.001f;
+    pathSegment.ray.direction = wiW;
+}
+
+// ===== MIS DIFFUSE SHADING WITH DIRECT LIGHTING =====
+
+__device__ void shadeDiffuseMIS(
+    PathSegment& pathSegment,
+    const ShadeableIntersection& intersection,
+    glm::vec3 materialColor,
+    Geom* geoms,
+    int num_geoms,
+    Material* materials,
+    LightInfo* lights,
+    int num_lights,
+    thrust::default_random_engine& rng
+) {
+    if (num_lights == 0) {
+        // No lights, fall back to regular path tracing
+        shadeDiffuse(pathSegment, intersection, materialColor, rng);
+        return;
+    }
+
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    glm::vec3 intersectionPoint = pathSegment.ray.origin +
+        pathSegment.ray.direction * intersection.t;
+    glm::vec3 normal = intersection.surfaceNormal;
+
+    glm::vec3 totalContribution(0.0f);
+
+    // === DIRECT LIGHTING (Light Sampling) ===
+
+    // Randomly select a light
+    int lightIdx = (int)(u01(rng) * num_lights);
+    lightIdx = min(lightIdx, num_lights - 1);
+    LightInfo& lightInfo = lights[lightIdx];
+    Geom& lightGeom = geoms[lightInfo.geomIdx];
+    Material& lightMat = materials[lightGeom.materialid];
+
+    // Sample a point on the light
+    glm::vec3 lightPoint = sampleLight(lightGeom, rng);
+    glm::vec3 toLight = lightPoint - intersectionPoint;
+    float distToLight = glm::length(toLight);
+    toLight = glm::normalize(toLight);
+
+    // Check visibility (shadow ray)
+    Ray shadowRay;
+    shadowRay.origin = intersectionPoint + normal * 0.001f;
+    shadowRay.direction = toLight;
+
+    bool visible = true;
+    glm::vec3 tmp_intersect, tmp_normal;
+    bool tmp_outside;
+
+    // Check intersection with all geometries
+    for (int i = 0; i < num_geoms; i++) {
+        if (i == lightInfo.geomIdx) continue; // Skip the light itself
+
+        float t = -1.0f;
+        if (geoms[i].type == CUBE) {
+            t = boxIntersectionTest(geoms[i], shadowRay, tmp_intersect, tmp_normal, tmp_outside);
+        }
+        else if (geoms[i].type == SPHERE) {
+            t = sphereIntersectionTest(geoms[i], shadowRay, tmp_intersect, tmp_normal, tmp_outside);
+        }
+
+        if (t > 0.0f && t < distToLight - 0.001f) {
+            visible = false;
+            break;
+        }
+    }
+
+    if (visible) {
+        // Compute light normal at sampled point (approximate)
+        glm::vec3 lightNormal = glm::normalize(lightPoint - lightGeom.translation);
+
+        // Geometric term
+        float cosThetaLight = abs(glm::dot(-toLight, lightNormal));
+        float cosThetaSurface = max(0.0f, glm::dot(toLight, normal));
+        float geometricTerm = cosThetaSurface * cosThetaLight / (distToLight * distToLight);
+
+        // PDFs for MIS
+        float pdfLight = (1.0f / lightInfo.area) * (1.0f / num_lights);
+        float pdfBRDF = cosThetaSurface / PI; // Cosine-weighted hemisphere sampling
+
+        // MIS weight using balance heuristic
+        float misWeight = powerHeuristic(pdfLight, pdfBRDF);
+
+        // Direct lighting contribution
+        glm::vec3 lightEmission = lightMat.color * lightMat.emittance;
+        glm::vec3 brdf = materialColor / PI; // Lambertian BRDF
+
+        totalContribution += misWeight * lightEmission * brdf * geometricTerm / pdfLight;
+    }
+
+    // === INDIRECT LIGHTING (BRDF Sampling) ===
+
+    // Sample the BRDF (cosine-weighted hemisphere)
+    glm::vec3 wiW = calculateRandomDirectionInHemisphere(normal, rng);
+
+    // For indirect lighting, we'll trace a ray and see if it hits a light
+    // This will be evaluated in the next bounce
+    // We need to store the MIS weight information for the next evaluation
+
+    // For now, we'll use a simplified approach:
+    // The indirect contribution will be handled by the regular path tracing
+    // We only add the direct lighting contribution here
+
+    // Update path color with direct lighting contribution
+    pathSegment.color *= materialColor + totalContribution;
+
+    // Set up the new ray for indirect lighting
+    pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
     pathSegment.ray.direction = wiW;
 }
 
@@ -532,6 +766,100 @@ __global__ void shadeMaterial(
     }
 }
 
+// ===== MODIFIED SHADING KERNEL =====
+
+__global__ void shadeMaterialMIS(
+    int iter,
+    int num_paths,
+    ShadeableIntersection* shadeableIntersections,
+    PathSegment* pathSegments,
+    Material* materials,
+    Geom* geoms,
+    int num_geoms,
+    LightInfo* lights,
+    int num_lights,
+    EnvironmentMap envMap,
+    bool firstIter)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_paths) return;
+
+    if (pathSegments[idx].remainingBounces <= 0) {
+        return;
+    }
+
+    ShadeableIntersection intersection = shadeableIntersections[idx];
+
+    if (intersection.t > 0.0f) {
+        Material material = materials[intersection.materialId];
+        glm::vec3 materialColor = material.color;
+
+        // Handle light sources
+        if (material.emittance > 0.0f) {
+            pathSegments[idx].color *= (materialColor * material.emittance);
+            pathSegments[idx].remainingBounces = 0;
+            return;
+        }
+
+        pathSegments[idx].remainingBounces--;
+
+        if (pathSegments[idx].remainingBounces <= 0) {
+            pathSegments[idx].color = glm::vec3(0.0f);
+            return;
+        }
+
+        thrust::default_random_engine rng = makeSeededRandomEngine(
+            iter, idx, pathSegments[idx].remainingBounces);
+
+        MaterialType mType = material.type;
+
+        switch (mType) {
+        case DIFFUSE:
+            pathSegments[idx].prevIsSpecular = false;
+            // Use MIS for diffuse materials
+            shadeDiffuseMIS(pathSegments[idx], intersection, materialColor,
+                geoms, num_geoms, materials, lights, num_lights, rng);
+            break;
+
+        case SPECULAR:
+            pathSegments[idx].prevIsSpecular = true;
+            shadeSpecular(pathSegments[idx], intersection, materialColor);
+            break;
+
+        case REFRACTIVE:
+            pathSegments[idx].prevIsSpecular = true;
+            shadeRefractive(pathSegments[idx], intersection, materialColor,
+                material.indexOfRefraction, rng);
+            break;
+
+        default:
+            pathSegments[idx].prevIsSpecular = false;
+            shadeDiffuseMIS(pathSegments[idx], intersection, materialColor,
+                geoms, num_geoms, materials, lights, num_lights, rng);
+            break;
+        }
+    }
+    else {
+        // Handle environment map or background
+        if (envMap.enabled) {
+            glm::vec3 envColor = sampleEnvironmentMap(pathSegments[idx].ray.direction, envMap);
+            if (firstIter) {
+                pathSegments[idx].color *= envColor;
+            }
+            else if (pathSegments[idx].prevIsSpecular) {
+                pathSegments[idx].color *= envColor;
+            }
+            else {
+                pathSegments[idx].color *= envColor * 0.5f;
+            }
+        }
+        else {
+            pathSegments[idx].color *= glm::vec3(0.0f);
+        }
+        pathSegments[idx].remainingBounces = 0;
+    }
+}
+
 // Add the current iteration's output to the overall image
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
 {
@@ -648,15 +976,28 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
 
-        shadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
+   //     shadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
+   //         iter,
+   //         num_paths,
+   //         dev_intersections,
+   //         dev_paths,
+   //         dev_materials,
+			//dev_environmentMap,
+   //         firstIter
+   //     );
+        shadeMaterialMIS << <numblocksPathSegmentTracing, blockSize1d >> > (
             iter,
             num_paths,
             dev_intersections,
             dev_paths,
             dev_materials,
-			dev_environmentMap,
+            dev_geoms,
+            hst_scene->geoms.size(),
+            dev_lights,
+            num_lights,
+            dev_environmentMap,
             firstIter
-        );
+            );
 		cudaDeviceSynchronize();
 
         if (firstIter) {

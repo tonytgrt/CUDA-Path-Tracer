@@ -56,6 +56,12 @@ struct Material
 	enum MaterialType type;
 };
 
+struct LightInfo {
+    int geomIdx;
+    float area;
+    float pdf; 
+};
+
 struct Camera
 {
     glm::ivec2 resolution;
