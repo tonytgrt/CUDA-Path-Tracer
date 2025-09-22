@@ -361,7 +361,8 @@ __global__ void shadeMaterial(
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
-    Material* materials)
+    Material* materials,
+    bool firstIter)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_paths) return;
@@ -409,26 +410,35 @@ __global__ void shadeMaterial(
 
         switch (mType) {
         case DIFFUSE:
+			pathSegments[idx].prevIsSpecular = false;
             shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
             break;
 
 		case SPECULAR:
+            pathSegments[idx].prevIsSpecular = true;
 			shadeSpecular(pathSegments[idx], intersection, materialColor);
 			break;
 
 		case REFRACTIVE:
+            pathSegments[idx].prevIsSpecular = true;
 			shadeRefractive(pathSegments[idx], intersection, materialColor, material.indexOfRefraction, rng);
 			break;
 
         default:
+            pathSegments[idx].prevIsSpecular = false;
             shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
             break;
         }
 
     }
     else {
-        // Ray missed all geometry
-        pathSegments[idx].color = glm::vec3(0.0f);
+		
+        if (firstIter || pathSegments[idx].prevIsSpecular) {
+            // TODO: sample environment map instead of setting to black
+            pathSegments[idx].color = glm::vec3(0.0f);
+		}
+
+        //pathSegments[idx].color = glm::vec3(0.0f);
         pathSegments[idx].remainingBounces = 0;
     }
 }
@@ -519,6 +529,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     // --- PathSegment Tracing Stage ---
     // Shoot ray into scene, bounce between objects, push shading chunks
 
+    bool firstIter = true;
     bool iterationComplete = false;
     while (!iterationComplete)
     {
@@ -553,9 +564,14 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             num_paths,
             dev_intersections,
             dev_paths,
-            dev_materials
+            dev_materials,
+            firstIter
         );
+		cudaDeviceSynchronize();
 
+        if (firstIter) {
+            firstIter = false;
+		}
 
         dim3 numBlocksGather = (num_paths + blockSize1d - 1) / blockSize1d;
         gatherTerminatedPaths << <numBlocksGather, blockSize1d >> > (
