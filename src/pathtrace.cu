@@ -372,6 +372,10 @@ __device__ glm::vec3 sampleEnvironmentMap(const glm::vec3& direction, const Envi
 
 // Power heuristic for MIS (balance heuristic with beta=2)
 __device__ float powerHeuristic(float pdfA, float pdfB) {
+    // FIREFLY FIX: Ensure non-zero PDFs
+    pdfA = max(pdfA, 1e-8f);
+    pdfB = max(pdfB, 1e-8f);
+
     float pdfA2 = pdfA * pdfA;
     float pdfB2 = pdfB * pdfB;
     return pdfA2 / (pdfA2 + pdfB2);
@@ -459,6 +463,17 @@ __host__ __device__ void shadeDiffuse(
 }
 
 // ===== MIS DIFFUSE SHADING WITH DIRECT LIGHTING =====
+__device__ glm::vec3 clamp(const glm::vec3& v, const glm::vec3& min, const glm::vec3& max) {
+    return glm::vec3(
+        fminf(fmaxf(v.x, min.x), max.x),
+        fminf(fmaxf(v.y, min.y), max.y),
+        fminf(fmaxf(v.z, min.z), max.z)
+    );
+}
+
+__device__ float clamp(float v, float min, float max) {
+    return fminf(fmaxf(v, min), max);
+}
 
 __device__ void shadeDiffuseMIS(
     PathSegment& pathSegment,
@@ -472,7 +487,6 @@ __device__ void shadeDiffuseMIS(
     thrust::default_random_engine& rng
 ) {
     if (num_lights == 0) {
-        // No lights, fall back to regular path tracing
         shadeDiffuse(pathSegment, intersection, materialColor, rng);
         return;
     }
@@ -498,6 +512,13 @@ __device__ void shadeDiffuseMIS(
     glm::vec3 lightPoint = sampleLight(lightGeom, rng);
     glm::vec3 toLight = lightPoint - intersectionPoint;
     float distToLight = glm::length(toLight);
+
+    // FIREFLY FIX #1: Skip if too close to avoid numerical issues
+    if (distToLight < 0.01f) {
+        shadeDiffuse(pathSegment, intersection, materialColor, rng);
+        return;
+    }
+
     toLight = glm::normalize(toLight);
 
     // Check visibility (shadow ray)
@@ -534,34 +555,52 @@ __device__ void shadeDiffuseMIS(
         // Geometric term
         float cosThetaLight = abs(glm::dot(-toLight, lightNormal));
         float cosThetaSurface = max(0.0f, glm::dot(toLight, normal));
-        float geometricTerm = cosThetaSurface * cosThetaLight / (distToLight * distToLight);
+
+        // FIREFLY FIX #2: Clamp distance squared to avoid extreme values
+        float distSquaredClamped = max(distToLight * distToLight, 0.1f);
+        float geometricTerm = cosThetaSurface * cosThetaLight / distSquaredClamped;
+
+        // FIREFLY FIX #3: Ensure minimum area to avoid huge PDFs
+        float safeArea = max(lightInfo.area, 0.01f);
 
         // PDFs for MIS
-        float pdfLight = (1.0f / lightInfo.area) * (1.0f / num_lights);
-        float pdfBRDF = cosThetaSurface / PI; // Cosine-weighted hemisphere sampling
+        float pdfLight = (1.0f / safeArea) * (1.0f / num_lights);
+        float pdfBRDF = cosThetaSurface / PI;
 
-        // MIS weight using balance heuristic
-        float misWeight = powerHeuristic(pdfLight, pdfBRDF);
+        // FIREFLY FIX #4: Clamp PDFs to reasonable range
+        pdfLight = clamp(pdfLight, 0.001f, 1000.0f);
+        pdfBRDF = max(pdfBRDF, 0.001f);
+
+        // FIREFLY FIX #5: Use balance heuristic for small lights (more stable)
+        float misWeight;
+        if (lightInfo.area < 0.1f) {
+            // Balance heuristic for small lights
+            misWeight = pdfLight / (pdfLight + pdfBRDF);
+        }
+        else {
+            // Power heuristic for normal lights
+            float pdfLight2 = pdfLight * pdfLight;
+            float pdfBRDF2 = pdfBRDF * pdfBRDF;
+            misWeight = pdfLight2 / (pdfLight2 + pdfBRDF2);
+        }
 
         // Direct lighting contribution
         glm::vec3 lightEmission = lightMat.color * lightMat.emittance;
-        glm::vec3 brdf = materialColor / PI; // Lambertian BRDF
+        glm::vec3 brdf = materialColor / PI;
 
-        totalContribution += misWeight * lightEmission * brdf * geometricTerm / pdfLight;
+        glm::vec3 contribution = misWeight * lightEmission * brdf * geometricTerm / pdfLight;
+
+        // FIREFLY FIX #6: Clamp final contribution to prevent fireflies
+        const float MAX_CONTRIBUTION = 10.0f;  // Tune this based on scenes
+        contribution = clamp(contribution, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
+
+        totalContribution += contribution;
     }
 
     // === INDIRECT LIGHTING (BRDF Sampling) ===
 
     // Sample the BRDF (cosine-weighted hemisphere)
     glm::vec3 wiW = calculateRandomDirectionInHemisphere(normal, rng);
-
-    // For indirect lighting, we'll trace a ray and see if it hits a light
-    // This will be evaluated in the next bounce
-    // We need to store the MIS weight information for the next evaluation
-
-    // For now, we'll use a simplified approach:
-    // The indirect contribution will be handled by the regular path tracing
-    // We only add the direct lighting contribution here
 
     // Update path color with direct lighting contribution
     pathSegment.color *= materialColor + totalContribution;
