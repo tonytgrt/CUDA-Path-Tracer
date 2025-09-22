@@ -90,6 +90,8 @@ static PathSegment* dev_paths = NULL;
 static ShadeableIntersection* dev_intersections = NULL;
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
+static EnvironmentMap dev_environmentMap;
+static glm::vec3* dev_envmap_data = NULL;
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -118,6 +120,27 @@ void pathtraceInit(Scene* scene)
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
     // TODO: initialize any extra device memeory you need
+    // Initialize environment map
+    dev_environmentMap.enabled = scene->environmentMap.enabled;
+    dev_environmentMap.width = scene->environmentMap.width;
+    dev_environmentMap.height = scene->environmentMap.height;
+    dev_environmentMap.intensity = scene->environmentMap.intensity;
+
+    if (scene->environmentMap.enabled && scene->environmentMap.data.size() > 0)
+    {
+        size_t envMapSize = scene->environmentMap.width * scene->environmentMap.height * sizeof(glm::vec3);
+        cudaMalloc(&dev_envmap_data, envMapSize);
+        cudaMemcpy(dev_envmap_data, scene->environmentMap.data.data(), envMapSize, cudaMemcpyHostToDevice);
+        dev_environmentMap.data = dev_envmap_data;
+
+        printf("Environment map uploaded to GPU: %dx%d pixels, %.2f MB\n",
+            scene->environmentMap.width, scene->environmentMap.height,
+            envMapSize / (1024.0f * 1024.0f));
+    }
+    else
+    {
+        dev_environmentMap.data = nullptr;
+    }
 
     checkCUDAError("pathtraceInit");
 }
@@ -130,6 +153,12 @@ void pathtraceFree()
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     // TODO: clean up any extra device memory you created
+    // Free environment map data
+    if (dev_envmap_data != NULL)
+    {
+        cudaFree(dev_envmap_data);
+        dev_envmap_data = NULL;
+    }
 
     checkCUDAError("pathtraceFree");
 }
@@ -234,15 +263,56 @@ __global__ void computeIntersections(
     }
 }
 
-// LOOK: "fake" shader demonstrating what you might do with the info in
-// a ShadeableIntersection, as well as how to use thrust's random number
-// generator. Observe that since the thrust random number generator basically
-// adds "noise" to the iteration, the image should start off noisy and get
-// cleaner as more iterations are computed.
-//
-// Note that this shader does NOT do a BSDF evaluation!
-// Your shaders should handle that - this can allow techniques such as
-// bump mapping.
+// ===== DEVICE FUNCTIONS FOR ENVIRONMENT MAP =====
+
+__device__ glm::vec3 sampleEnvironmentMap(const glm::vec3& direction, const EnvironmentMap& envMap)
+{
+    if (!envMap.enabled || envMap.data == nullptr) {
+        return glm::vec3(0.0f);
+    }
+
+    // Convert direction to spherical coordinates
+    // theta: angle from +Y axis (0 to PI)
+    // phi: angle around Y axis from +X (0 to 2*PI)
+    float theta = acosf(fmaxf(-1.0f, fminf(1.0f, direction.y)));
+    float phi = atan2f(direction.z, direction.x);
+
+    // Convert to UV coordinates [0, 1]
+    float u = (phi + PI) / (2.0f * PI);
+    float v = theta / PI;
+
+    // Clamp UV to valid range
+    u = fmaxf(0.0f, fminf(1.0f, u));
+    v = fmaxf(0.0f, fminf(1.0f, v));
+
+    // Convert to pixel coordinates
+    float fx = u * (envMap.width - 1);
+    float fy = v * (envMap.height - 1);
+
+    // Bilinear interpolation for smoother sampling
+    int x0 = (int)floorf(fx);
+    int y0 = (int)floorf(fy);
+    int x1 = min(x0 + 1, envMap.width - 1);
+    int y1 = min(y0 + 1, envMap.height - 1);
+
+    float wx = fx - x0;
+    float wy = fy - y0;
+
+    // Sample four neighboring pixels
+    glm::vec3 p00 = envMap.data[y0 * envMap.width + x0];
+    glm::vec3 p10 = envMap.data[y0 * envMap.width + x1];
+    glm::vec3 p01 = envMap.data[y1 * envMap.width + x0];
+    glm::vec3 p11 = envMap.data[y1 * envMap.width + x1];
+
+    // Bilinear interpolation
+    glm::vec3 p0 = p00 * (1.0f - wx) + p10 * wx;
+    glm::vec3 p1 = p01 * (1.0f - wx) + p11 * wx;
+    glm::vec3 result = p0 * (1.0f - wy) + p1 * wy;
+
+    return result;
+}
+
+// ===== SHADING HELPER FUNCTIONS =====
 __host__ __device__ void shadeDiffuse(
     PathSegment& pathSegment,
     const ShadeableIntersection& intersection,
@@ -355,13 +425,14 @@ __host__ __device__ void shadeRefractive(
 	pathSegment.ray.direction = newDirection;
 }
 
-
+// ===== MAIN SHADING KERNEL =====
 __global__ void shadeMaterial(
     int iter,
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
     Material* materials,
+	EnvironmentMap envMap,
     bool firstIter)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -432,11 +503,28 @@ __global__ void shadeMaterial(
 
     }
     else {
-		
-        if (firstIter || pathSegments[idx].prevIsSpecular) {
-            // TODO: sample environment map instead of setting to black
-            pathSegments[idx].color = glm::vec3(0.0f);
-		}
+        
+
+        if (envMap.enabled) {
+            glm::vec3 envColor = sampleEnvironmentMap(pathSegments[idx].ray.direction, envMap);
+            if (firstIter) {
+                // Direct visibility of environment
+                pathSegments[idx].color *= envColor;
+            }
+            else if (pathSegments[idx].prevIsSpecular) {
+                // Environment visible through reflection/refraction
+                pathSegments[idx].color *= envColor;
+            }
+            else {
+                // Diffuse bounce missed - could use ambient or black
+                // Using environment as ambient light
+                pathSegments[idx].color *= envColor * 0.5f; // Reduced contribution
+            }
+        }
+        else {
+            // No environment map - use black
+            pathSegments[idx].color *= glm::vec3(0.0f);
+        }
 
         //pathSegments[idx].color = glm::vec3(0.0f);
         pathSegments[idx].remainingBounces = 0;
@@ -565,6 +653,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_intersections,
             dev_paths,
             dev_materials,
+			dev_environmentMap,
             firstIter
         );
 		cudaDeviceSynchronize();

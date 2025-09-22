@@ -51,6 +51,11 @@
         "LOOKAT":[0.0,5.0,0.0],
         "UP":[0.0,1.0,0.0]
     },
+    "EnvironmentMap":
+    {
+        "FILE":"../scenes/interior_atelier_soft_daylight.hdr",
+        "INTENSITY":1.0
+    },
     "Objects":
     [
         {

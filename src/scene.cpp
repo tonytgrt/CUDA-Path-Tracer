@@ -6,6 +6,11 @@
 #include <glm/gtx/string_cast.hpp>
 #include "json.hpp"
 
+// Add STB Image implementation for HDR loading
+#define STB_IMAGE_IMPLEMENTATION
+
+#include "stb_image.h"
+
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -77,6 +82,76 @@ void Scene::loadFromJSON(const std::string& jsonName)
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);
     }
+
+    // Load environment map if specified
+    if (data.contains("EnvironmentMap"))
+    {
+        const auto& envMapData = data["EnvironmentMap"];
+        if (envMapData.contains("FILE"))
+        {
+            std::string envMapFile = envMapData["FILE"];
+
+            // Handle both absolute and relative paths
+            std::string fullPath = envMapFile;
+
+            // If relative path, try relative to the scene file location
+            if (envMapFile[0] != '/' && envMapFile[1] != ':')  // Not an absolute path
+            {
+                size_t lastSlash = jsonName.find_last_of("/\\");
+                if (lastSlash != std::string::npos)
+                {
+                    std::string sceneDir = jsonName.substr(0, lastSlash + 1);
+                    fullPath = sceneDir + envMapFile;
+                }
+            }
+
+            cout << "Loading environment map from: " << fullPath << endl;
+
+            // Load HDR image using stb_image
+            int width, height, channels;
+            float* hdrData = stbi_loadf(fullPath.c_str(), &width, &height, &channels, 3);
+
+            if (hdrData)
+            {
+                environmentMap.enabled = true;
+                environmentMap.width = width;
+                environmentMap.height = height;
+
+                // Get intensity multiplier if specified
+                if (envMapData.contains("INTENSITY"))
+                {
+                    environmentMap.intensity = envMapData["INTENSITY"];
+                }
+                else
+                {
+                    environmentMap.intensity = 1.0f;
+                }
+
+                // Convert to glm::vec3 and store
+                environmentMap.data.resize(width * height);
+                for (int i = 0; i < width * height; ++i)
+                {
+                    environmentMap.data[i] = glm::vec3(
+                        hdrData[i * 3 + 0],
+                        hdrData[i * 3 + 1],
+                        hdrData[i * 3 + 2]
+                    ) * environmentMap.intensity;
+                }
+
+                // Free the original HDR data
+                stbi_image_free(hdrData);
+
+                cout << "Environment map loaded: " << width << "x" << height << " pixels" << endl;
+                cout << "Environment map intensity: " << environmentMap.intensity << endl;
+            }
+            else
+            {
+                cout << "Failed to load environment map: " << fullPath << endl;
+                cout << "Continuing without environment map..." << endl;
+            }
+        }
+    }
+
     const auto& objectsData = data["Objects"];
     for (const auto& p : objectsData)
     {

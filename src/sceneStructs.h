@@ -68,6 +68,25 @@ struct Camera
     glm::vec2 pixelLength;
 };
 
+// New structure for environment map
+struct EnvironmentMap
+{
+    glm::vec3* data;        // HDR pixel data (on GPU)
+    int width;
+    int height;
+    float intensity;
+    bool enabled;
+};
+
+struct HostEnvironmentMap
+{
+    std::vector<glm::vec3> data;  // HDR pixel data (on CPU)
+    int width;
+    int height;
+    float intensity;
+    bool enabled;
+};
+
 struct RenderState
 {
     Camera camera;
