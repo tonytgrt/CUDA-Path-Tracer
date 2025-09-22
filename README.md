@@ -10,10 +10,16 @@ CUDA Path Tracer
 ### If you are checking out this repo, the path tracer is still a WIP! It will be finished at Oct 1, 2025
 
 ## WIP Renders
+### Cornell Box with MIS and Environment Map
+![](/img/wip-4.png)
+
+### Environment Map
 ![](/img/wip-3.png)
 
+### Cornell Box of Diffuse, Specular, and Refractive objects
 ![](/img/wip-2.png)
 
+### Specular objects
 ![](/img/wip-1.png)
 
 ## Bloopers

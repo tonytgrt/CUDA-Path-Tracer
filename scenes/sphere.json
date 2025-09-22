@@ -53,7 +53,7 @@
     },
     "EnvironmentMap":
     {
-        "FILE":"../scenes/Footprint_Court_2k.hdr",
+        "FILE":"../envmaps/Tropical_Beach_3k.hdr",
         "INTENSITY":1.0
     },
     "Objects":

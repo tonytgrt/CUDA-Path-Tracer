@@ -53,7 +53,7 @@
     },
     "EnvironmentMap":
     {
-        "FILE":"../scenes/interior_atelier_soft_daylight.hdr",
+        "FILE":"../envmaps/interior_atelier_soft_daylight.hdr",
         "INTENSITY":1.0
     },
     "Objects":

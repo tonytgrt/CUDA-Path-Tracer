@@ -143,7 +143,7 @@ void initializeLights(Scene* scene) {
             cudaMemcpyHostToDevice);
     }
 
-    printf("Initialized %d light sources for MIS\n", num_lights);
+    //printf("Initialized %d light sources for MIS\n", num_lights);
 }
 
 void pathtraceInit(Scene* scene)
@@ -437,6 +437,97 @@ __device__ glm::vec3 sampleLight(const Geom& geom, thrust::default_random_engine
     return geom.translation; // Fallback to center
 }
 
+// ==== = ENVIRONMENT MAP IMPORTANCE SAMPLING HELPERS ==== =
+
+// Convert direction to environment map UV coordinates
+__device__ glm::vec2 directionToUV(const glm::vec3 & direction) {
+    float theta = acosf(fmaxf(-1.0f, fminf(1.0f, direction.y)));
+    float phi = atan2f(direction.z, direction.x);
+
+    float u = (phi + PI) / (2.0f * PI);
+    float v = theta / PI;
+
+    return glm::vec2(u, v);
+}
+
+// Convert UV coordinates to direction
+__device__ glm::vec3 uvToDirection(float u, float v) {
+    float phi = u * 2.0f * PI - PI;
+    float theta = v * PI;
+
+    float sinTheta = sinf(theta);
+    return glm::vec3(
+        sinTheta * cosf(phi),
+        cosf(theta),
+        sinTheta * sinf(phi)
+    );
+}
+
+// Get the solid angle of a pixel in the environment map
+__device__ float getPixelSolidAngle(int x, int y, int width, int height) {
+    float v = (y + 0.5f) / height;
+    float theta = v * PI;
+    float sinTheta = sinf(theta);
+
+    // Solid angle is proportional to sin(theta) for equirectangular projection
+    float pixelArea = (2.0f * PI / width) * (PI / height);
+    return pixelArea * sinTheta;
+}
+
+// Sample environment map with uniform sampling
+__device__ glm::vec3 sampleEnvironmentUniform(
+    const glm::vec3& normal,
+    const EnvironmentMap& envMap,
+    thrust::default_random_engine& rng,
+    glm::vec3& outDirection,
+    float& outPdf
+) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    // Sample uniform direction on hemisphere
+    float u = u01(rng);
+    float v = u01(rng);
+
+    float phi = 2.0f * PI * u;
+    float cosTheta = v;  // Uniform in cos(theta) for hemisphere
+    float sinTheta = sqrtf(1.0f - cosTheta * cosTheta);
+
+    // Local space direction
+    glm::vec3 localDir(
+        sinTheta * cosf(phi),
+        cosTheta,
+        sinTheta * sinf(phi)
+    );
+
+    // Transform to world space aligned with normal
+    glm::vec3 tangent, bitangent;
+    if (fabs(normal.x) < 0.9f) {
+        tangent = glm::normalize(glm::cross(glm::vec3(1, 0, 0), normal));
+    }
+    else {
+        tangent = glm::normalize(glm::cross(glm::vec3(0, 1, 0), normal));
+    }
+    bitangent = glm::cross(normal, tangent);
+
+    outDirection = localDir.x * tangent + localDir.z * bitangent + localDir.y * normal;
+    outPdf = 1.0f / (2.0f * PI);  // Uniform hemisphere PDF
+
+    // Sample the environment map
+    return sampleEnvironmentMap(outDirection, envMap);
+}
+
+// Compute PDF for a given direction in the environment map
+__device__ float environmentPdf(const glm::vec3& direction, const EnvironmentMap& envMap) {
+    // For uniform sampling
+    return 1.0f / (2.0f * PI);
+
+    // For importance sampling (would need precomputed CDFs):
+    // glm::vec2 uv = directionToUV(direction);
+    // int x = (int)(uv.x * envMap.width);
+    // int y = (int)(uv.y * envMap.height);
+    // return luminancePdf[y * envMap.width + x];
+}
+
 // ===== SHADING HELPER FUNCTIONS =====
 __host__ __device__ void shadeDiffuse(
     PathSegment& pathSegment,
@@ -484,130 +575,167 @@ __device__ void shadeDiffuseMIS(
     Material* materials,
     LightInfo* lights,
     int num_lights,
+	EnvironmentMap& envMap,
     thrust::default_random_engine& rng
 ) {
-    if (num_lights == 0) {
-        shadeDiffuse(pathSegment, intersection, materialColor, rng);
-        return;
-    }
-
     thrust::uniform_real_distribution<float> u01(0, 1);
 
     glm::vec3 intersectionPoint = pathSegment.ray.origin +
         pathSegment.ray.direction * intersection.t;
     glm::vec3 normal = intersection.surfaceNormal;
 
-    glm::vec3 totalContribution(0.0f);
+    const float MIN_PDF = 1e-6f;
+    const float MAX_CONTRIBUTION = 20.0f;
 
-    // === DIRECT LIGHTING (Light Sampling) ===
+    glm::vec3 directLight(0.0f);
 
-    // Randomly select a light
-    int lightIdx = (int)(u01(rng) * num_lights);
-    lightIdx = min(lightIdx, num_lights - 1);
-    LightInfo& lightInfo = lights[lightIdx];
-    Geom& lightGeom = geoms[lightInfo.geomIdx];
-    Material& lightMat = materials[lightGeom.materialid];
+    // === Sample all light sources with MIS ===
 
-    // Sample a point on the light
-    glm::vec3 lightPoint = sampleLight(lightGeom, rng);
-    glm::vec3 toLight = lightPoint - intersectionPoint;
-    float distToLight = glm::length(toLight);
+    // 1. Sample area lights
+    if (num_lights > 0) {
+        // Sample one random light
+        int lightIdx = min((int)(u01(rng) * num_lights), num_lights - 1);
+        LightInfo& lightInfo = lights[lightIdx];
+        Geom& lightGeom = geoms[lightInfo.geomIdx];
+        Material& lightMat = materials[lightGeom.materialid];
 
-    // FIREFLY FIX #1: Skip if too close to avoid numerical issues
-    if (distToLight < 0.01f) {
-        shadeDiffuse(pathSegment, intersection, materialColor, rng);
-        return;
+        glm::vec3 lightPoint = sampleLight(lightGeom, rng);
+        glm::vec3 wi = lightPoint - intersectionPoint;
+        float dist = glm::length(wi);
+
+        if (dist > 0.01f) {
+            wi /= dist;
+            float NdotL = glm::dot(normal, wi);
+
+            if (NdotL > 0.0f) {
+                // Shadow test
+                Ray shadowRay;
+                shadowRay.origin = intersectionPoint + normal * 0.001f;
+                shadowRay.direction = wi;
+
+                bool visible = true;
+                glm::vec3 tmp_i, tmp_n;
+                bool tmp_o;
+
+                for (int i = 0; i < num_geoms && visible; i++) {
+                    if (i == lightInfo.geomIdx) continue;
+
+                    float t = -1.0f;
+                    if (geoms[i].type == CUBE)
+                        t = boxIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
+                    else if (geoms[i].type == SPHERE)
+                        t = sphereIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
+
+                    visible = (t < 0.001f || t > dist - 0.001f);
+                }
+
+                if (visible) {
+                    // Compute contribution
+                    glm::vec3 lightNormal = glm::normalize(lightPoint - lightGeom.translation);
+                    float NdotL_light = fmaxf(0.0f, glm::dot(-wi, lightNormal));
+
+                    // PDFs
+                    float pdfLight = 1.0f / (fmaxf(lightInfo.area, 0.01f) * num_lights);
+                    float pdfBRDF = NdotL / PI;
+                    float pdfEnv = envMap.enabled ? environmentPdf(wi, envMap) : 0.0f;
+
+                    // MIS weight (3-way if environment is enabled)
+                    float weight;
+                    if (envMap.enabled) {
+                        weight = pdfLight / (pdfLight + pdfBRDF + pdfEnv);
+                    }
+                    else {
+                        weight = pdfLight / (pdfLight + pdfBRDF);
+                    }
+
+                    glm::vec3 Le = lightMat.color * lightMat.emittance;
+                    glm::vec3 f = materialColor / PI;
+                    float G = NdotL * NdotL_light / (dist * dist);
+
+                    directLight += weight * Le * f * G * (float)num_lights / pdfLight;
+                }
+            }
+        }
     }
 
-    toLight = glm::normalize(toLight);
+    // 2. Sample environment map
+    if (envMap.enabled) {
+        glm::vec3 envDir;
+        float envPdf;
+        glm::vec3 envRadiance = sampleEnvironmentUniform(normal, envMap, rng, envDir, envPdf);
 
-    // Check visibility (shadow ray)
-    Ray shadowRay;
-    shadowRay.origin = intersectionPoint + normal * 0.001f;
-    shadowRay.direction = toLight;
+        float NdotL = glm::dot(normal, envDir);
+        if (NdotL > 0.0f) {
+            // Check visibility
+            Ray envRay;
+            envRay.origin = intersectionPoint + normal * 0.001f;
+            envRay.direction = envDir;
 
-    bool visible = true;
-    glm::vec3 tmp_intersect, tmp_normal;
-    bool tmp_outside;
+            bool visible = true;
+            glm::vec3 tmp_i, tmp_n;
+            bool tmp_o;
 
-    // Check intersection with all geometries
-    for (int i = 0; i < num_geoms; i++) {
-        if (i == lightInfo.geomIdx) continue; // Skip the light itself
+            for (int i = 0; i < num_geoms && visible; i++) {
+                float t = -1.0f;
+                if (geoms[i].type == CUBE)
+                    t = boxIntersectionTest(geoms[i], envRay, tmp_i, tmp_n, tmp_o);
+                else if (geoms[i].type == SPHERE)
+                    t = sphereIntersectionTest(geoms[i], envRay, tmp_i, tmp_n, tmp_o);
 
-        float t = -1.0f;
-        if (geoms[i].type == CUBE) {
-            t = boxIntersectionTest(geoms[i], shadowRay, tmp_intersect, tmp_normal, tmp_outside);
-        }
-        else if (geoms[i].type == SPHERE) {
-            t = sphereIntersectionTest(geoms[i], shadowRay, tmp_intersect, tmp_normal, tmp_outside);
-        }
+                if (t > 0.001f) {
+                    // Check if we hit an emissive object
+                    if (materials[geoms[i].materialid].emittance > 0.0f) {
+                        // We hit a light source - need to compute MIS weight
+                        LightInfo* hitLight = nullptr;
+                        for (int l = 0; l < num_lights; l++) {
+                            if (lights[l].geomIdx == i) {
+                                hitLight = &lights[l];
+                                break;
+                            }
+                        }
 
-        if (t > 0.0f && t < distToLight - 0.001f) {
-            visible = false;
-            break;
+                        if (hitLight) {
+                            // Compute light PDF for this direction
+                            float lightPdf = 1.0f / (fmaxf(hitLight->area, 0.01f) * num_lights);
+                            float brdfPdf = NdotL / PI;
+
+                            // 3-way MIS weight
+                            float weight = envPdf / (envPdf + brdfPdf + lightPdf);
+
+                            glm::vec3 Le = materials[geoms[i].materialid].color *
+                                materials[geoms[i].materialid].emittance;
+                            glm::vec3 f = materialColor / PI;
+
+                            directLight += weight * Le * f * NdotL / envPdf;
+                        }
+                    }
+                    visible = false;
+                }
+            }
+
+            if (visible) {
+                // Ray reaches environment without hitting geometry
+                float brdfPdf = NdotL / PI;
+                float weight = envPdf / (envPdf + brdfPdf);
+
+                glm::vec3 f = materialColor / PI;
+                directLight += weight * envRadiance * f * NdotL / envPdf;
+            }
         }
     }
 
-    if (visible) {
-        // Compute light normal at sampled point (approximate)
-        glm::vec3 lightNormal = glm::normalize(lightPoint - lightGeom.translation);
+    // 3. Continue with BRDF sampling for indirect
+    glm::vec3 brdfDir = calculateRandomDirectionInHemisphere(normal, rng);
 
-        // Geometric term
-        float cosThetaLight = abs(glm::dot(-toLight, lightNormal));
-        float cosThetaSurface = max(0.0f, glm::dot(toLight, normal));
+    // Clamp direct lighting contribution
+    directLight = clamp(directLight, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
 
-        // FIREFLY FIX #2: Clamp distance squared to avoid extreme values
-        float distSquaredClamped = max(distToLight * distToLight, 0.1f);
-        float geometricTerm = cosThetaSurface * cosThetaLight / distSquaredClamped;
+    // Apply contributions
+    pathSegment.color *= materialColor + directLight;
 
-        // FIREFLY FIX #3: Ensure minimum area to avoid huge PDFs
-        float safeArea = max(lightInfo.area, 0.01f);
-
-        // PDFs for MIS
-        float pdfLight = (1.0f / safeArea) * (1.0f / num_lights);
-        float pdfBRDF = cosThetaSurface / PI;
-
-        // FIREFLY FIX #4: Clamp PDFs to reasonable range
-        pdfLight = clamp(pdfLight, 0.001f, 1000.0f);
-        pdfBRDF = max(pdfBRDF, 0.001f);
-
-        // FIREFLY FIX #5: Use balance heuristic for small lights (more stable)
-        float misWeight;
-        if (lightInfo.area < 0.1f) {
-            // Balance heuristic for small lights
-            misWeight = pdfLight / (pdfLight + pdfBRDF);
-        }
-        else {
-            // Power heuristic for normal lights
-            float pdfLight2 = pdfLight * pdfLight;
-            float pdfBRDF2 = pdfBRDF * pdfBRDF;
-            misWeight = pdfLight2 / (pdfLight2 + pdfBRDF2);
-        }
-
-        // Direct lighting contribution
-        glm::vec3 lightEmission = lightMat.color * lightMat.emittance;
-        glm::vec3 brdf = materialColor / PI;
-
-        glm::vec3 contribution = misWeight * lightEmission * brdf * geometricTerm / pdfLight;
-
-        // FIREFLY FIX #6: Clamp final contribution to prevent fireflies
-        const float MAX_CONTRIBUTION = 10.0f;  // Tune this based on scenes
-        contribution = clamp(contribution, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
-
-        totalContribution += contribution;
-    }
-
-    // === INDIRECT LIGHTING (BRDF Sampling) ===
-
-    // Sample the BRDF (cosine-weighted hemisphere)
-    glm::vec3 wiW = calculateRandomDirectionInHemisphere(normal, rng);
-
-    // Update path color with direct lighting contribution
-    pathSegment.color *= materialColor + totalContribution;
-
-    // Set up the new ray for indirect lighting
+    // Set up next ray
     pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
-    pathSegment.ray.direction = wiW;
+    pathSegment.ray.direction = brdfDir;
 }
 
 __host__ __device__ void shadeSpecular(
@@ -857,7 +985,7 @@ __global__ void shadeMaterialMIS(
             pathSegments[idx].prevIsSpecular = false;
             // Use MIS for diffuse materials
             shadeDiffuseMIS(pathSegments[idx], intersection, materialColor,
-                geoms, num_geoms, materials, lights, num_lights, rng);
+                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
 
         case SPECULAR:
@@ -874,7 +1002,7 @@ __global__ void shadeMaterialMIS(
         default:
             pathSegments[idx].prevIsSpecular = false;
             shadeDiffuseMIS(pathSegments[idx], intersection, materialColor,
-                geoms, num_geoms, materials, lights, num_lights, rng);
+                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
         }
     }
