@@ -26,6 +26,10 @@
 
 static std::string startTimeString;
 
+static std::string currentSceneFile = "";
+static char filePathBuffer[256] = "";
+static bool needsReload = false;
+
 // For camera controls
 static bool leftMousePressed = false;
 static bool rightMousePressed = false;
@@ -254,6 +258,78 @@ void InitImguiData(GuiDataContainer* guiData)
     imguiData = guiData;
 }
 
+void reloadScene(const std::string& sceneFilePath) {
+    // Save the current scene file path
+    currentSceneFile = sceneFilePath;
+
+    // Clean up the old scene
+    if (scene != nullptr) {
+        pathtraceFree();
+        delete scene;
+        scene = nullptr;
+    }
+
+    // Load the new scene
+    scene = new Scene(sceneFilePath.c_str());
+
+    // Reset camera and render state
+    iteration = 0;
+    renderState = &scene->state;
+    Camera& cam = renderState->camera;
+    width = cam.resolution.x;
+    height = cam.resolution.y;
+
+    // Recalculate camera parameters
+    glm::vec3 view = cam.view;
+    glm::vec3 up = cam.up;
+    glm::vec3 right = glm::cross(view, up);
+    up = glm::cross(right, view);
+
+    cameraPosition = cam.position;
+
+    // compute phi (horizontal) and theta (vertical) relative 3D axis
+    glm::vec3 viewXZ = glm::vec3(view.x, 0.0f, view.z);
+    glm::vec3 viewZY = glm::vec3(0.0f, view.y, view.z);
+    phi = glm::acos(glm::dot(glm::normalize(viewXZ), glm::vec3(0, 0, -1)));
+    theta = glm::acos(glm::dot(glm::normalize(viewZY), glm::vec3(0, 1, 0)));
+    ogLookAt = cam.lookAt;
+    zoom = glm::length(cam.position - ogLookAt);
+
+    // Reinitialize path tracer
+    pathtraceInit(scene);
+
+    // Force camera update
+    camchanged = true;
+
+    printf("Scene reloaded: %s\n", sceneFilePath.c_str());
+}
+
+void saveImage()
+{
+    float samples = iteration;
+    // output image file
+    Image img(width, height);
+
+    for (int x = 0; x < width; x++)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            int index = x + (y * width);
+            glm::vec3 pix = renderState->image[index];
+            img.setPixel(width - 1 - x, y, glm::vec3(pix) / samples);
+        }
+    }
+
+    std::string filename = renderState->imageName;
+    std::ostringstream ss;
+    ss << filename << "." << startTimeString << "." << samples << "samp";
+    filename = ss.str();
+
+    // CHECKITOUT
+    img.savePNG(filename);
+    //img.saveHDR(filename);  // Save a Radiance HDR file
+}
+
 
 // LOOK: Un-Comment to check ImGui Usage
 void RenderImGui()
@@ -264,30 +340,139 @@ void RenderImGui()
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    bool show_demo_window = true;
-    bool show_another_window = false;
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-    static float f = 0.0f;
-    static int counter = 0;
+    ImGui::Begin("Path Tracer Control Panel");
 
-    ImGui::Begin("Path Tracer Analytics");                  // Create a window called "Hello, world!" and append into it.
-    
-    // LOOK: Un-Comment to check the output window and usage
-    //ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-    //ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-    //ImGui::Checkbox("Another Window", &show_another_window);
+    // Scene Controls Section
+    ImGui::Separator();
+    ImGui::Text("Scene Controls");
+    ImGui::Separator();
 
-    //ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-    //ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
+    // Display current scene file
+    ImGui::Text("Current Scene: %s", currentSceneFile.c_str());
 
-    //if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-    //    counter++;
-    //ImGui::SameLine();
-    //ImGui::Text("counter = %d", counter);
-    ImGui::Text("Traced Depth %d", imguiData->TracedDepth);
-    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    // Reload button
+    if (ImGui::Button("Reload Scene", ImVec2(200, 30))) {
+        if (!currentSceneFile.empty()) {
+            reloadScene(currentSceneFile);
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Reload the current scene file and reset the render");
+    }
+
+    ImGui::Spacing();
+
+    // File picker section
+    ImGui::Text("Load New Scene:");
+    ImGui::PushItemWidth(300);
+    ImGui::InputText("##filepath", filePathBuffer, sizeof(filePathBuffer));
+    ImGui::PopItemWidth();
+
+    ImGui::SameLine();
+    if (ImGui::Button("Browse...", ImVec2(80, 0))) {
+        // For now, we'll just show a tooltip about manual entry
+        // In a real implementation, you'd integrate a file dialog library
+        ImGui::OpenPopup("File Browser Info");
+    }
+
+    if (ImGui::Button("Load Scene", ImVec2(200, 30))) {
+        if (strlen(filePathBuffer) > 0) {
+            std::string newScenePath(filePathBuffer);
+
+            // Check if file exists
+            std::ifstream testFile(newScenePath);
+            if (testFile.good()) {
+                testFile.close();
+                reloadScene(newScenePath);
+            }
+            else {
+                printf("Error: Could not open scene file: %s\n", newScenePath.c_str());
+            }
+        }
+    }
+
+    // File browser info popup
+    if (ImGui::BeginPopup("File Browser Info")) {
+        ImGui::Text("Enter the path to a JSON scene file");
+        ImGui::Text("Example: scenes/cornell.json");
+        ImGui::Separator();
+        ImGui::Text("Tip: You can drag and drop a file");
+        ImGui::Text("into the text field on some systems");
+        ImGui::EndPopup();
+    }
+
+    // Rendering Stats Section
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Rendering Statistics");
+    ImGui::Separator();
+
+    ImGui::Text("Current Iteration: %d / %d", iteration, renderState->iterations);
+    ImGui::Text("Traced Depth: %d", imguiData->TracedDepth);
+    ImGui::Text("Resolution: %d x %d", width, height);
+
+    // Progress bar for iterations
+    float progress = (float)iteration / (float)renderState->iterations;
+    ImGui::ProgressBar(progress, ImVec2(0, 0));
+    ImGui::SameLine();
+    ImGui::Text("%.1f%%", progress * 100.0f);
+
+    ImGui::Spacing();
+    ImGui::Text("Performance:");
+    ImGui::Text("  %.3f ms/frame", 1000.0f / ImGui::GetIO().Framerate);
+    ImGui::Text("  %.1f FPS", ImGui::GetIO().Framerate);
+
+    // Camera Controls Section
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Camera Controls");
+    ImGui::Separator();
+
+    if (ImGui::Button("Reset Camera", ImVec2(200, 25))) {
+        camchanged = true;
+        Camera& cam = renderState->camera;
+        cam.lookAt = ogLookAt;
+        iteration = 0;
+    }
+
+    ImGui::Text("Camera Position:");
+    ImGui::Text("  X: %.2f, Y: %.2f, Z: %.2f",
+        cameraPosition.x, cameraPosition.y, cameraPosition.z);
+
+    // Quick Actions Section
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Quick Actions");
+    ImGui::Separator();
+
+    if (ImGui::Button("Save Image", ImVec2(200, 30))) {
+        saveImage();
+        ImGui::OpenPopup("Image Saved");
+    }
+
+    // Image saved popup
+    if (ImGui::BeginPopup("Image Saved")) {
+        ImGui::Text("Image saved successfully!");
+        if (ImGui::Button("OK", ImVec2(80, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // Instructions
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Keyboard Shortcuts:");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [S] Save Image");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [Space] Reset Camera");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [Esc] Save & Exit");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [LMB] Rotate Camera");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [RMB] Zoom");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [MMB] Pan");
+
     ImGui::End();
-
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -349,6 +534,8 @@ int main(int argc, char** argv)
     }
 
     const char* sceneFile = argv[1];
+    currentSceneFile = std::string(sceneFile); 
+    strncpy(filePathBuffer, sceneFile, sizeof(filePathBuffer) - 1);
 
     // Load scene file
     scene = new Scene(sceneFile);
@@ -392,31 +579,7 @@ int main(int argc, char** argv)
     return 0;
 }
 
-void saveImage()
-{
-    float samples = iteration;
-    // output image file
-    Image img(width, height);
 
-    for (int x = 0; x < width; x++)
-    {
-        for (int y = 0; y < height; y++)
-        {
-            int index = x + (y * width);
-            glm::vec3 pix = renderState->image[index];
-            img.setPixel(width - 1 - x, y, glm::vec3(pix) / samples);
-        }
-    }
-
-    std::string filename = renderState->imageName;
-    std::ostringstream ss;
-    ss << filename << "." << startTimeString << "." << samples << "samp";
-    filename = ss.str();
-
-    // CHECKITOUT
-    img.savePNG(filename);
-    //img.saveHDR(filename);  // Save a Radiance HDR file
-}
 
 void runCuda()
 {
