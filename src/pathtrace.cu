@@ -482,6 +482,7 @@ __global__ void shadeMaterial(
         switch (mType) {
         case DIFFUSE:
 			pathSegments[idx].prevIsSpecular = false;
+            // TODO: implement MIS
             shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
             break;
 
