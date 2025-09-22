@@ -10,6 +10,8 @@ CUDA Path Tracer
 ### If you are checking out this repo, the path tracer is still a WIP! It will be finished at Oct 1, 2025
 
 ### WIP Renders
+![](/img/wip-3.png)
+
 ![](/img/wip-2.png)
 
 ![](/img/wip-1.png)

@@ -133,9 +133,9 @@ void pathtraceInit(Scene* scene)
         cudaMemcpy(dev_envmap_data, scene->environmentMap.data.data(), envMapSize, cudaMemcpyHostToDevice);
         dev_environmentMap.data = dev_envmap_data;
 
-        printf("Environment map uploaded to GPU: %dx%d pixels, %.2f MB\n",
-            scene->environmentMap.width, scene->environmentMap.height,
-            envMapSize / (1024.0f * 1024.0f));
+        //printf("Environment map uploaded to GPU: %dx%d pixels, %.2f MB\n",
+        //    scene->environmentMap.width, scene->environmentMap.height,
+        //    envMapSize / (1024.0f * 1024.0f));
     }
     else
     {

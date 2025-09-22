@@ -7,8 +7,6 @@
 #include "json.hpp"
 
 // Add STB Image implementation for HDR loading
-#define STB_IMAGE_IMPLEMENTATION
-
 #include "stb_image.h"
 
 #include <fstream>
