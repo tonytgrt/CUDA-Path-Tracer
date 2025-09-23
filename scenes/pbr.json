@@ -1,21 +1,21 @@
 {
     "Materials": {
         "brushed_metal": {
-            "TYPE": "Specular",
+            "TYPE": "PBR",
             "RGB": [0.7, 0.7, 0.8],
             "ROUGHNESS": 0.3,
             "METALLIC": 1.0,
             "TRANSPARENCY": 0.0
         },
         "polished_gold": {
-            "TYPE": "Specular",
+            "TYPE": "PBR",
             "RGB": [1.0, 0.765, 0.336],
             "ROUGHNESS": 0.05,
             "METALLIC": 1.0,
             "TRANSPARENCY": 0.0
         },
         "frosted_glass": {
-            "TYPE": "Refractive",
+            "TYPE": "PBR",
             "RGB": [0.95, 0.95, 0.95],
             "IOR": 1.5,
             "ROUGHNESS": 0.2,
@@ -23,21 +23,21 @@
             "TRANSPARENCY": 0.9
         },
         "plastic_red": {
-            "TYPE": "Diffuse",
+            "TYPE": "PBR",
             "RGB": [0.8, 0.2, 0.2],
             "ROUGHNESS": 0.4,
             "METALLIC": 0.0,
             "TRANSPARENCY": 0.0
         },
         "rough_aluminum": {
-            "TYPE": "Specular",
+            "TYPE": "PBR",
             "RGB": [0.913, 0.921, 0.925],
             "ROUGHNESS": 0.5,
             "METALLIC": 1.0,
             "TRANSPARENCY": 0.0
         },
         "semi_transparent_plastic": {
-            "TYPE": "Diffuse",
+            "TYPE": "PBR",
             "RGB": [0.3, 0.6, 0.9],
             "ROUGHNESS": 0.6,
             "METALLIC": 0.0,

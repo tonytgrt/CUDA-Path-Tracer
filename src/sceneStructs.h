@@ -20,6 +20,7 @@ enum MaterialType
     DIFFUSE,
     SPECULAR,
     REFRACTIVE,
+    PBR,
     EMITTING
 };
 
