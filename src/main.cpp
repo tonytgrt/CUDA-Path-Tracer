@@ -41,6 +41,13 @@ static bool camchanged = true;
 static float dtheta = 0, dphi = 0;
 static glm::vec3 cammove;
 
+static int guiWidth = 400;  // Width of the ImGui panel
+static int windowWidth;      // Total window width
+static int windowHeight;     // Total window height
+static bool firstFrame = true;
+static float zoomSpeed = 0.1f;
+
+
 float zoom, theta, phi;
 glm::vec3 cameraPosition;
 glm::vec3 ogLookAt; // for recentering the camera
@@ -68,6 +75,7 @@ void runCuda();
 void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods);
 void mousePositionCallback(GLFWwindow* window, double xpos, double ypos);
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+void scrollCallback(GLFWwindow* window, double xoffset, double yoffset);
 
 std::string currentTimeString()
 {
@@ -213,7 +221,11 @@ bool init()
         exit(EXIT_FAILURE);
     }
 
-    window = glfwCreateWindow(width, height, "CUDA Path Tracer", NULL, NULL);
+    // Create window with extra width for GUI panel
+    windowWidth = width + guiWidth;
+    windowHeight = height;
+
+    window = glfwCreateWindow(windowWidth, windowHeight, "CUDA Path Tracer", NULL, NULL);
     if (!window)
     {
         glfwTerminate();
@@ -223,6 +235,7 @@ bool init()
     glfwSetKeyCallback(window, keyCallback);
     glfwSetCursorPosCallback(window, mousePositionCallback);
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
+    glfwSetScrollCallback(window, scrollCallback);
 
     // Set up GL context
     glewExperimental = GL_TRUE;
@@ -231,12 +244,21 @@ bool init()
         return false;
     }
     printf("Opengl Version:%s\n", glGetString(GL_VERSION));
-    //Set up ImGui
 
+    //Set up ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     io = &ImGui::GetIO(); (void)io;
-    ImGui::StyleColorsLight();
+    io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    // Use a clean, modern style
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 0.0f;
+    style.FrameRounding = 4.0f;
+    style.ScrollbarRounding = 4.0f;
+    style.GrabRounding = 4.0f;
+
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 120");
 
@@ -340,44 +362,52 @@ void RenderImGui()
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::Begin("Path Tracer Control Panel");
+    // Set up the ImGui window to dock on the right side
+    if (firstFrame) {
+        ImGui::SetNextWindowPos(ImVec2(width, 0));
+        ImGui::SetNextWindowSize(ImVec2(guiWidth, windowHeight));
+        firstFrame = false;
+    }
+
+    // Create a window that fills the right side
+    ImGui::SetNextWindowPos(ImVec2(width, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(guiWidth, windowHeight), ImGuiCond_Always);
+
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+    ImGui::Begin("Path Tracer Control Panel", nullptr, window_flags);
 
     // Scene Controls Section
     ImGui::Separator();
     ImGui::Text("Scene Controls");
     ImGui::Separator();
 
-    // Display current scene file
-    ImGui::Text("Current Scene: %s", currentSceneFile.c_str());
+    // Display current scene file (truncate if too long)
+    std::string displayPath = currentSceneFile;
+    if (displayPath.length() > 40) {
+        displayPath = "..." + displayPath.substr(displayPath.length() - 37);
+    }
+    ImGui::Text("Current: %s", displayPath.c_str());
 
     // Reload button
-    if (ImGui::Button("Reload Scene", ImVec2(200, 30))) {
+    if (ImGui::Button("Reload Scene", ImVec2(-1, 30))) {
         if (!currentSceneFile.empty()) {
             reloadScene(currentSceneFile);
         }
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Reload the current scene file and reset the render");
     }
 
     ImGui::Spacing();
 
     // File picker section
     ImGui::Text("Load New Scene:");
-    ImGui::PushItemWidth(300);
+    ImGui::PushItemWidth(-1);
     ImGui::InputText("##filepath", filePathBuffer, sizeof(filePathBuffer));
     ImGui::PopItemWidth();
 
-    ImGui::SameLine();
-    if (ImGui::Button("Browse...", ImVec2(80, 0))) {
-        // For now, we'll just show a tooltip about manual entry
-        // In a real implementation, you'd integrate a file dialog library
-        ImGui::OpenPopup("File Browser Info");
-    }
-
-    if (ImGui::Button("Load Scene", ImVec2(200, 30))) {
+    if (ImGui::Button("Load Scene", ImVec2(-1, 30))) {
         if (strlen(filePathBuffer) > 0) {
             std::string newScenePath(filePathBuffer);
 
@@ -388,18 +418,18 @@ void RenderImGui()
                 reloadScene(newScenePath);
             }
             else {
-                printf("Error: Could not open scene file: %s\n", newScenePath.c_str());
+                ImGui::OpenPopup("Error");
             }
         }
     }
 
-    // File browser info popup
-    if (ImGui::BeginPopup("File Browser Info")) {
-        ImGui::Text("Enter the path to a JSON scene file");
-        ImGui::Text("Example: scenes/cornell.json");
-        ImGui::Separator();
-        ImGui::Text("Tip: You can drag and drop a file");
-        ImGui::Text("into the text field on some systems");
+    // Error popup
+    if (ImGui::BeginPopup("Error")) {
+        ImGui::Text("Could not open scene file!");
+        ImGui::Text("%s", filePathBuffer);
+        if (ImGui::Button("OK", ImVec2(80, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
         ImGui::EndPopup();
     }
 
@@ -409,20 +439,19 @@ void RenderImGui()
     ImGui::Text("Rendering Statistics");
     ImGui::Separator();
 
-    ImGui::Text("Current Iteration: %d / %d", iteration, renderState->iterations);
-    ImGui::Text("Traced Depth: %d", imguiData->TracedDepth);
+    ImGui::Text("Iteration: %d / %d", iteration, renderState->iterations);
+    ImGui::Text("Trace Depth: %d", imguiData->TracedDepth);
     ImGui::Text("Resolution: %d x %d", width, height);
 
     // Progress bar for iterations
     float progress = (float)iteration / (float)renderState->iterations;
-    ImGui::ProgressBar(progress, ImVec2(0, 0));
-    ImGui::SameLine();
-    ImGui::Text("%.1f%%", progress * 100.0f);
+    ImGui::ProgressBar(progress, ImVec2(-1, 0));
+    ImGui::Text("Progress: %.1f%%", progress * 100.0f);
 
     ImGui::Spacing();
     ImGui::Text("Performance:");
-    ImGui::Text("  %.3f ms/frame", 1000.0f / ImGui::GetIO().Framerate);
-    ImGui::Text("  %.1f FPS", ImGui::GetIO().Framerate);
+    ImGui::BulletText("%.3f ms/frame", 1000.0f / ImGui::GetIO().Framerate);
+    ImGui::BulletText("%.1f FPS", ImGui::GetIO().Framerate);
 
     // Camera Controls Section
     ImGui::Spacing();
@@ -430,16 +459,42 @@ void RenderImGui()
     ImGui::Text("Camera Controls");
     ImGui::Separator();
 
-    if (ImGui::Button("Reset Camera", ImVec2(200, 25))) {
+    if (ImGui::Button("Reset Camera", ImVec2(-1, 25))) {
         camchanged = true;
         Camera& cam = renderState->camera;
         cam.lookAt = ogLookAt;
+        zoom = glm::length(cam.position - ogLookAt);  // Reset zoom too
         iteration = 0;
     }
 
-    ImGui::Text("Camera Position:");
-    ImGui::Text("  X: %.2f, Y: %.2f, Z: %.2f",
-        cameraPosition.x, cameraPosition.y, cameraPosition.z);
+    ImGui::Text("Position:");
+    ImGui::BulletText("X: %.2f", cameraPosition.x);
+    ImGui::BulletText("Y: %.2f", cameraPosition.y);
+    ImGui::BulletText("Z: %.2f", cameraPosition.z);
+
+    ImGui::Spacing();
+    ImGui::Text("Zoom: %.2f", zoom);
+    ImGui::SliderFloat("Zoom Speed", &zoomSpeed, 0.01f, 0.5f, "%.2f");
+
+    // Quick zoom buttons
+    ImGui::Text("Quick Zoom:");
+    ImGui::SameLine();
+    if (ImGui::Button("-", ImVec2(30, 0))) {
+        zoom *= 1.2f;
+        zoom = std::fmin(zoom, 100.0f);
+        camchanged = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset", ImVec2(60, 0))) {
+        zoom = glm::length(scene->state.camera.position - scene->state.camera.lookAt);
+        camchanged = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+", ImVec2(30, 0))) {
+        zoom *= 0.8f;
+        zoom = std::fmax(0.1f, zoom);
+        camchanged = true;
+    }
 
     // Quick Actions Section
     ImGui::Spacing();
@@ -447,36 +502,43 @@ void RenderImGui()
     ImGui::Text("Quick Actions");
     ImGui::Separator();
 
-    if (ImGui::Button("Save Image", ImVec2(200, 30))) {
+    if (ImGui::Button("Save Image", ImVec2(-1, 30))) {
         saveImage();
         ImGui::OpenPopup("Image Saved");
     }
 
     // Image saved popup
-    if (ImGui::BeginPopup("Image Saved")) {
+    if (ImGui::BeginPopupModal("Image Saved", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Image saved successfully!");
-        if (ImGui::Button("OK", ImVec2(80, 0))) {
+        ImGui::Separator();
+        ImGui::Text("File: %s", renderState->imageName.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
 
-    // Instructions
+    // Instructions (collapsible)
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Keyboard Shortcuts:");
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [S] Save Image");
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [Space] Reset Camera");
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [Esc] Save & Exit");
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [LMB] Rotate Camera");
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [RMB] Zoom");
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  [MMB] Pan");
+    if (ImGui::CollapsingHeader("Keyboard & Mouse Controls")) {
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Keyboard:");
+        ImGui::BulletText("[S] Save Image");
+        ImGui::BulletText("[Space] Reset Camera");
+        ImGui::BulletText("[Esc] Save & Exit");
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Mouse:");
+        ImGui::BulletText("[LMB Drag] Rotate Camera");
+        ImGui::BulletText("[Scroll] Zoom In/Out");
+        ImGui::BulletText("[RMB Drag] Alternative Zoom");
+        ImGui::BulletText("[MMB Drag] Pan Camera");
+    }
 
     ImGui::End();
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
 }
 
 bool MouseOverImGuiWindow()
@@ -494,16 +556,30 @@ void mainLoop()
 
         std::string title = "CUDA Path Tracer | " + utilityCore::convertIntToString(iteration) + " Iterations";
         glfwSetWindowTitle(window, title.c_str());
+
+        // Set viewport to only render in the left portion of the window
+        glViewport(0, 0, width, height);
+
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
         glBindTexture(GL_TEXTURE_2D, displayImage);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+        // Clear the entire window first
+        glViewport(0, 0, windowWidth, windowHeight);
+        glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
+
+        // Render the path traced image only in the left viewport
+        glViewport(0, 0, width, height);
 
         // Binding GL_PIXEL_UNPACK_BUFFER back to default
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
         // VAO, shader program, and texture already bound
-        glDrawElements(GL_TRIANGLES, 6,  GL_UNSIGNED_SHORT, 0);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+
+        // Reset viewport for ImGui
+        glViewport(0, 0, windowWidth, windowHeight);
 
         // Render ImGui Stuff
         RenderImGui();
@@ -639,6 +715,30 @@ void runCuda()
 //------INTERACTIVITY SETUP------
 //-------------------------------
 
+void scrollCallback(GLFWwindow* window, double xoffset, double yoffset)
+{
+    // Get current mouse position to check if it's over the render area
+    double xpos, ypos;
+    glfwGetCursorPos(window, &xpos, &ypos);
+
+    // Only process scroll if mouse is in the rendering area (left side)
+    // and not over ImGui
+    if (xpos > width || MouseOverImGuiWindow()) {
+        return;
+    }
+
+    // Adjust zoom based on scroll direction
+    // yoffset is positive when scrolling up (zoom in), negative when scrolling down (zoom out)
+    float zoomDelta = -yoffset * zoomSpeed;
+    zoom *= (1.0f + zoomDelta);
+
+    // Clamp zoom to reasonable values
+    zoom = std::fmax(0.1f, std::fmin(zoom, 100.0f));
+
+    // Mark camera as changed to trigger re-render
+    camchanged = true;
+}
+
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
     if (action == GLFW_PRESS)
@@ -664,8 +764,15 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
 {
-    if (MouseOverImGuiWindow())
+    double xpos, ypos;
+    glfwGetCursorPos(window, &xpos, &ypos);
+
+    // Check if mouse is over the ImGui window or outside render area
+    if (MouseOverImGuiWindow() || xpos > width)
     {
+        leftMousePressed = false;
+        rightMousePressed = false;
+        middleMousePressed = false;
         return;
     }
 
@@ -674,11 +781,20 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
     middleMousePressed = (button == GLFW_MOUSE_BUTTON_MIDDLE && action == GLFW_PRESS);
 }
 
+
 void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
 {
     if (xpos == lastX || ypos == lastY)
     {
         return; // otherwise, clicking back into window causes re-start
+    }
+
+    // Only process mouse input if it's in the rendering area (left side)
+    // and not over ImGui
+    if (xpos > width || MouseOverImGuiWindow()) {
+        lastX = xpos;
+        lastY = ypos;
+        return;
     }
 
     if (leftMousePressed)
@@ -691,8 +807,10 @@ void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
     }
     else if (rightMousePressed)
     {
-        zoom += (ypos - lastY) / height;
-        zoom = std::fmax(0.1f, zoom);
+        // Alternative zoom method with right mouse button (finer control)
+        float zoomDelta = (ypos - lastY) / height;
+        zoom *= (1.0f + zoomDelta);
+        zoom = std::fmax(0.1f, std::fmin(zoom, 100.0f));
         camchanged = true;
     }
     else if (middleMousePressed)
@@ -714,3 +832,5 @@ void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
     lastX = xpos;
     lastY = ypos;
 }
+
+
