@@ -49,8 +49,9 @@ struct Material
         float exponent;
         glm::vec3 color;
     } specular;
-    float hasReflective;
-    float hasRefractive;
+    float transparency;
+    float roughness;
+	float metallic;
     float indexOfRefraction;
     float emittance;
 	enum MaterialType type;
