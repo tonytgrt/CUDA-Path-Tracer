@@ -45,38 +45,62 @@ void Scene::loadFromJSON(const std::string& jsonName)
         const auto& name = item.key();
         const auto& p = item.value();
         Material newMaterial{};
-        // TODO: handle materials loading differently
+        
+        // Initialize PBR properties with default values
+        newMaterial.transparency = 0.0f;  // Default: fully opaque
+        newMaterial.roughness = 0.5f;     // Default: medium roughness
+        newMaterial.metallic = 0.0f;      // Default: non-metallic
+
+        // Parse transparency (0.0 = fully opaque, 1.0 = fully transparent)
+        if (p.contains("TRANSPARENCY")) {
+            newMaterial.transparency = p["TRANSPARENCY"];
+            // Clamp to valid range
+            newMaterial.transparency = glm::clamp(newMaterial.transparency, 0.0f, 1.0f);
+        }
+
+        // Parse roughness (0.0 = perfectly smooth/mirror, 1.0 = completely rough/diffuse)
+        if (p.contains("ROUGHNESS")) {
+            newMaterial.roughness = p["ROUGHNESS"];
+            // Clamp to valid range
+            newMaterial.roughness = glm::clamp(newMaterial.roughness, 0.0f, 1.0f);
+        }
+
+        // Parse metallic (0.0 = dielectric/non-metal, 1.0 = metal)
+        if (p.contains("METALLIC")) {
+            newMaterial.metallic = p["METALLIC"];
+            // Clamp to valid range
+            newMaterial.metallic = glm::clamp(newMaterial.metallic, 0.0f, 1.0f);
+        }
+
+        if (p.contains("IOR")) {
+            newMaterial.indexOfRefraction = p["IOR"];
+        }
+        else {
+            newMaterial.indexOfRefraction = 1.5f;  // Default glass IOR
+        }
+
+        const auto& col = p["RGB"];
+        newMaterial.color = glm::vec3(col[0], col[1], col[2]);
+
         if (p["TYPE"] == "Diffuse")
         {
-            const auto& col = p["RGB"];
-            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
 			newMaterial.type = DIFFUSE;
         }
         else if (p["TYPE"] == "Emitting")
         {
-            const auto& col = p["RGB"];
-            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
             newMaterial.emittance = p["EMITTANCE"];
 			newMaterial.type = EMITTING;
         }
         else if (p["TYPE"] == "Specular")
         {
-            const auto& col = p["RGB"];
-            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
 			newMaterial.type = SPECULAR;
             }
         else if (p["TYPE"] == "Refractive")
         {
-            const auto& col = p["RGB"];
-            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
-            if (p.contains("IOR")) {
-                newMaterial.indexOfRefraction = p["IOR"];
-            }
-            else {
-                newMaterial.indexOfRefraction = 1.5f;  // Default glass IOR
-            }
             newMaterial.type = REFRACTIVE;
         }
+
+
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);
     }

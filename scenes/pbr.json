@@ -1,0 +1,118 @@
+{
+    "Materials": {
+        "brushed_metal": {
+            "TYPE": "Specular",
+            "RGB": [0.7, 0.7, 0.8],
+            "ROUGHNESS": 0.3,
+            "METALLIC": 1.0,
+            "TRANSPARENCY": 0.0
+        },
+        "polished_gold": {
+            "TYPE": "Specular",
+            "RGB": [1.0, 0.765, 0.336],
+            "ROUGHNESS": 0.05,
+            "METALLIC": 1.0,
+            "TRANSPARENCY": 0.0
+        },
+        "frosted_glass": {
+            "TYPE": "Refractive",
+            "RGB": [0.95, 0.95, 0.95],
+            "IOR": 1.5,
+            "ROUGHNESS": 0.2,
+            "METALLIC": 0.0,
+            "TRANSPARENCY": 0.9
+        },
+        "plastic_red": {
+            "TYPE": "Diffuse",
+            "RGB": [0.8, 0.2, 0.2],
+            "ROUGHNESS": 0.4,
+            "METALLIC": 0.0,
+            "TRANSPARENCY": 0.0
+        },
+        "rough_aluminum": {
+            "TYPE": "Specular",
+            "RGB": [0.913, 0.921, 0.925],
+            "ROUGHNESS": 0.5,
+            "METALLIC": 1.0,
+            "TRANSPARENCY": 0.0
+        },
+        "semi_transparent_plastic": {
+            "TYPE": "Diffuse",
+            "RGB": [0.3, 0.6, 0.9],
+            "ROUGHNESS": 0.6,
+            "METALLIC": 0.0,
+            "TRANSPARENCY": 0.3
+        },
+        "light": {
+            "TYPE": "Emitting",
+            "RGB": [1.0, 1.0, 1.0],
+            "EMITTANCE": 5.0
+        }
+    },
+    "Camera": {
+        "RES": [800, 800],
+        "FOVY": 45.0,
+        "ITERATIONS": 5000,
+        "DEPTH": 8,
+        "FILE": "pbr",
+        "EYE": [0.0, 5.0, 10.5],
+        "LOOKAT": [0.0, 5.0, 0.0],
+        "UP": [0.0, 1.0, 0.0]
+    },
+    "EnvironmentMap":
+    {
+        "FILE":"../envmaps/Footprint_Court_2k.hdr",
+        "INTENSITY":1.0
+    },
+    "Objects": [
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "brushed_metal",
+            "TRANS": [-3.0, 3.0, 0.0],
+            "ROTAT": [0.0, 0.0, 0.0],
+            "SCALE": [2.0, 2.0, 2.0]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "polished_gold",
+            "TRANS": [0.0, 3.0, 0.0],
+            "ROTAT": [0.0, 0.0, 0.0],
+            "SCALE": [2.0, 2.0, 2.0]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "frosted_glass",
+            "TRANS": [3.0, 3.0, 0.0],
+            "ROTAT": [0.0, 0.0, 0.0],
+            "SCALE": [2.0, 2.0, 2.0]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "plastic_red",
+            "TRANS": [-3.0, 7.0, 0.0],
+            "ROTAT": [45.0, 45.0, 0.0],
+            "SCALE": [1.5, 1.5, 1.5]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "rough_aluminum",
+            "TRANS": [0.0, 7.0, 0.0],
+            "ROTAT": [45.0, 45.0, 0.0],
+            "SCALE": [1.5, 1.5, 1.5]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "semi_transparent_plastic",
+            "TRANS": [3.0, 7.0, 0.0],
+            "ROTAT": [45.0, 45.0, 0.0],
+            "SCALE": [1.5, 1.5, 1.5]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "light",
+            "TRANS": [0.0, 10.0, 0.0],
+            "ROTAT": [0.0, 0.0, 0.0],
+            "SCALE": [3.0, 0.1, 3.0]
+        }
+    ]
+}
