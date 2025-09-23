@@ -38,6 +38,14 @@
             "TYPE":"Refractive",
             "RGB":[0.98, 0.98, 0.98],
             "IOR":1.50
+        },
+        "pbr_glass": {
+            "TYPE": "PBR",
+            "RGB": [0.95, 0.95, 0.95],
+            "IOR": 1.5,
+            "ROUGHNESS": 0.0,
+            "METALLIC": 0.0,
+            "TRANSPARENCY": 0.85
         }
     },
     "Camera":

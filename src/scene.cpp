@@ -46,14 +46,16 @@ void Scene::loadFromJSON(const std::string& jsonName)
         const auto& p = item.value();
         Material newMaterial{};
         
-        
-
 
         const auto& col = p["RGB"];
         newMaterial.color = glm::vec3(col[0], col[1], col[2]);
 
         if (p["TYPE"] == "Diffuse")
         {
+            newMaterial.transparency = 0.0f;  
+            newMaterial.roughness = 1.0f;     
+            newMaterial.metallic = 0.0f;      
+
 			newMaterial.type = DIFFUSE;
         }
         else if (p["TYPE"] == "Emitting")
@@ -63,10 +65,18 @@ void Scene::loadFromJSON(const std::string& jsonName)
         }
         else if (p["TYPE"] == "Specular")
         {
+            newMaterial.transparency = 0.0f;
+            newMaterial.roughness = 0.0f;
+            newMaterial.metallic = 0.2f;
+
 			newMaterial.type = SPECULAR;
             }
         else if (p["TYPE"] == "Refractive")
         {
+            newMaterial.transparency = 1.0f;
+            newMaterial.roughness = 0.0f;
+            newMaterial.metallic = 0.0f;
+
             if (p.contains("IOR")) {
                 newMaterial.indexOfRefraction = p["IOR"];
             }

@@ -87,32 +87,32 @@
             "SCALE": [2.0, 2.0, 2.0]
         },
         {
-            "TYPE": "cube",
+            "TYPE": "sphere",
             "MATERIAL": "plastic_red",
             "TRANS": [-3.0, 7.0, 0.0],
             "ROTAT": [45.0, 45.0, 0.0],
-            "SCALE": [1.5, 1.5, 1.5]
+            "SCALE": [2.0, 2.0, 2.0]
         },
         {
-            "TYPE": "cube",
+            "TYPE": "sphere",
             "MATERIAL": "rough_aluminum",
             "TRANS": [0.0, 7.0, 0.0],
             "ROTAT": [45.0, 45.0, 0.0],
-            "SCALE": [1.5, 1.5, 1.5]
+            "SCALE": [2.0, 2.0, 2.0]
         },
         {
-            "TYPE": "cube",
+            "TYPE": "sphere",
             "MATERIAL": "semi_transparent_plastic",
             "TRANS": [3.0, 7.0, 0.0],
             "ROTAT": [45.0, 45.0, 0.0],
-            "SCALE": [1.5, 1.5, 1.5]
+            "SCALE": [2.0, 2.0, 2.0]
         },
         {
             "TYPE": "cube",
             "MATERIAL": "light",
-            "TRANS": [0.0, 10.0, 0.0],
-            "ROTAT": [0.0, 0.0, 0.0],
-            "SCALE": [3.0, 0.1, 3.0]
+            "TRANS": [0.0, 4.0, 12.0],
+            "ROTAT": [90.0, 0.0, 0.0],
+            "SCALE": [10.0, 0.1, 10.0]
         }
     ]
 }

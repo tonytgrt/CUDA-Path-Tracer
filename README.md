@@ -10,6 +10,10 @@ CUDA Path Tracer
 ### If you are checking out this repo, the path tracer is still a WIP! It will be finished at Oct 1, 2025
 
 ## WIP Renders
+
+### PBR Materials
+![](/img/wip-5.png)
+
 ### Cornell Box with MIS and Environment Map
 ![](/img/wip-4.png)
 

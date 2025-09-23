@@ -566,6 +566,270 @@ __device__ float clamp(float v, float min, float max) {
     return fminf(fmaxf(v, min), max);
 }
 
+// ===== PBR HELPER FUNCTIONS =====
+
+// GGX/Trowbridge-Reitz Normal Distribution Function
+__device__ float GGX_D(const glm::vec3& n, const glm::vec3& h, float roughness) {
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float NdotH = fmaxf(0.0f, glm::dot(n, h));
+    float NdotH2 = NdotH * NdotH;
+
+    float denom = NdotH2 * (alpha2 - 1.0f) + 1.0f;
+    denom = PI * denom * denom;
+
+    return alpha2 / fmaxf(0.0001f, denom);
+}
+
+// Schlick-GGX Geometry Function (single term)
+__device__ float GGX_G1(const glm::vec3& n, const glm::vec3& v, float roughness) {
+    float alpha = roughness * roughness;
+    float k = alpha / 2.0f; // For IBL, use (alpha * alpha) / 2.0f
+
+    float NdotV = fmaxf(0.0f, glm::dot(n, v));
+    float denom = NdotV * (1.0f - k) + k;
+
+    return NdotV / fmaxf(0.0001f, denom);
+}
+
+// Smith's Geometry Function (combines two G1 terms)
+__device__ float GGX_G(const glm::vec3& n, const glm::vec3& v, const glm::vec3& l, float roughness) {
+    return GGX_G1(n, v, roughness) * GGX_G1(n, l, roughness);
+}
+
+// Fresnel term using Schlick's approximation
+__device__ glm::vec3 fresnelSchlick(float cosTheta, const glm::vec3& F0) {
+    return F0 + (glm::vec3(1.0f) - F0) * powf(1.0f - cosTheta, 5.0f);
+}
+
+// Sample GGX distribution for importance sampling
+__device__ glm::vec3 sampleGGX(const glm::vec3& normal, float roughness, thrust::default_random_engine& rng) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    float u = u01(rng);
+    float v = u01(rng);
+
+    float alpha = roughness * roughness;
+
+    // Sample in tangent space
+    float phi = 2.0f * PI * u;
+    float cosTheta = sqrtf((1.0f - v) / (1.0f + (alpha * alpha - 1.0f) * v));
+    float sinTheta = sqrtf(1.0f - cosTheta * cosTheta);
+
+    glm::vec3 h_tangent(
+        sinTheta * cosf(phi),
+        sinTheta * sinf(phi),
+        cosTheta
+    );
+
+    // Transform to world space
+    glm::vec3 up = fabs(normal.z) < 0.999f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+    glm::vec3 tangentX = glm::normalize(glm::cross(up, normal));
+    glm::vec3 tangentY = glm::cross(normal, tangentX);
+
+    return tangentX * h_tangent.x + tangentY * h_tangent.y + normal * h_tangent.z;
+}
+
+// ===== MAIN PBR SHADING FUNCTION =====
+
+__device__ void shadePBR(
+    PathSegment& pathSegment,
+    const ShadeableIntersection& intersection,
+    const Material& material,
+    Geom* geoms,
+    int num_geoms,
+    Material* materials,
+    LightInfo* lights,
+    int num_lights,
+    EnvironmentMap& envMap,
+    thrust::default_random_engine& rng
+) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    glm::vec3 intersectionPoint = pathSegment.ray.origin +
+        pathSegment.ray.direction * intersection.t;
+    glm::vec3 normal = intersection.surfaceNormal;
+    glm::vec3 wo = -pathSegment.ray.direction; // Outgoing direction (toward camera)
+
+    // Material properties
+    glm::vec3 albedo = material.color;
+    float roughness = glm::clamp(material.roughness, 0.02f, 1.0f); // Clamp to avoid singularities
+    float metallic = material.metallic;
+    float transparency = material.transparency;
+
+    // Calculate F0 (reflectance at normal incidence)
+    glm::vec3 F0 = glm::vec3(0.04f); // Default for dielectric
+    F0 = glm::mix(F0, albedo, metallic); // For metals, F0 = albedo
+
+    // Handle transparency first
+    if (transparency > 0.0f && u01(rng) < transparency) {
+        // Transparent - shoot ray through
+        // Optional: add refraction based on IOR if desired
+        float ior = material.indexOfRefraction > 0 ? material.indexOfRefraction : 1.5f;
+
+        // Simple transparency without refraction
+        if (roughness < 0.1f) {
+            // Clear transparency
+            pathSegment.ray.origin = intersectionPoint - normal * 0.001f;
+            pathSegment.ray.direction = pathSegment.ray.direction; // Continue straight
+        }
+        else {
+            // Rough transparency - scatter the ray
+            glm::vec3 scatterDir = glm::normalize(pathSegment.ray.direction +
+                roughness * (2.0f * glm::vec3(u01(rng), u01(rng), u01(rng)) - glm::vec3(1.0f)));
+            pathSegment.ray.origin = intersectionPoint - normal * 0.001f;
+            pathSegment.ray.direction = scatterDir;
+        }
+
+        // Tint by material color but reduce by transparency
+        pathSegment.color *= albedo;
+        return;
+    }
+
+    // Opaque material - use PBR BRDF
+
+    // Direct lighting component for MIS
+    const float MIN_PDF = 1e-6f;
+    const float MAX_CONTRIBUTION = 20.0f;
+    glm::vec3 directLight(0.0f);
+
+    // Sample lights for direct lighting (simplified version)
+    if (num_lights > 0) {
+        // Pick a random light
+        int lightIdx = (int)(u01(rng) * num_lights);
+        if (lightIdx >= num_lights) lightIdx = num_lights - 1;
+
+        Geom& lightGeom = geoms[lights[lightIdx].geomIdx];
+        glm::vec3 lightPos = sampleLight(lightGeom, rng);
+        glm::vec3 wi = glm::normalize(lightPos - intersectionPoint);
+
+        // Shadow ray check
+        Ray shadowRay;
+        shadowRay.origin = intersectionPoint + normal * 0.001f;
+        shadowRay.direction = wi;
+
+        float distToLight = glm::length(lightPos - intersectionPoint);
+        bool visible = true;
+
+        // Check for occlusion
+        for (int i = 0; i < num_geoms; i++) {
+            if (i == lights[lightIdx].geomIdx) continue;
+
+            glm::vec3 temp_intersect, temp_normal;
+            bool temp_outside;
+            float t = -1;
+
+            if (geoms[i].type == CUBE) {
+                t = boxIntersectionTest(geoms[i], shadowRay, temp_intersect, temp_normal, temp_outside);
+            }
+            else if (geoms[i].type == SPHERE) {
+                t = sphereIntersectionTest(geoms[i], shadowRay, temp_intersect, temp_normal, temp_outside);
+            }
+
+            if (t > 0.001f && t < distToLight - 0.001f) {
+                visible = false;
+                break;
+            }
+        }
+
+        if (visible) {
+            // Calculate PBR BRDF for direct light
+            glm::vec3 h = glm::normalize(wi + wo);
+            float NdotL = fmaxf(0.0f, glm::dot(normal, wi));
+            float NdotV = fmaxf(0.0f, glm::dot(normal, wo));
+            float NdotH = fmaxf(0.0f, glm::dot(normal, h));
+            float VdotH = fmaxf(0.0f, glm::dot(wo, h));
+
+            // Calculate BRDF components
+            float D = GGX_D(normal, h, roughness);
+            float G = GGX_G(normal, wo, wi, roughness);
+            glm::vec3 F = fresnelSchlick(VdotH, F0);
+
+            // Cook-Torrance BRDF
+            glm::vec3 numerator = D * G * F;
+            float denominator = 4.0f * NdotV * NdotL;
+            glm::vec3 specular = numerator / fmaxf(0.001f, denominator);
+
+            // Diffuse component (only for dielectrics)
+            glm::vec3 kS = F; // Specular contribution
+            glm::vec3 kD = glm::vec3(1.0f) - kS; // Diffuse contribution
+            kD *= 1.0f - metallic; // Metals have no diffuse
+
+            glm::vec3 diffuse = kD * albedo / PI;
+
+            // Combine diffuse and specular
+            glm::vec3 brdf = diffuse + specular;
+
+            // Add light contribution
+            Material& lightMat = materials[lightGeom.materialid];
+            directLight += brdf * lightMat.color * lightMat.emittance * NdotL / (distToLight * distToLight);
+        }
+    }
+
+    // Indirect lighting - importance sample the BRDF
+
+    // Decide between diffuse and specular based on metallic and roughness
+    float specularProbability = 0.5f + 0.5f * metallic; // More likely to sample specular for metals
+
+    if (u01(rng) < specularProbability) {
+        // Sample specular lobe using GGX importance sampling
+        glm::vec3 h = sampleGGX(normal, roughness, rng);
+        glm::vec3 wi = glm::reflect(-wo, h);
+
+        // Make sure the sampled direction is in the hemisphere
+        if (glm::dot(wi, normal) > 0.0f) {
+            float NdotL = glm::dot(normal, wi);
+            float NdotV = fmaxf(0.0f, glm::dot(normal, wo));
+            float VdotH = fmaxf(0.0f, glm::dot(wo, h));
+
+            // Calculate Fresnel
+            glm::vec3 F = fresnelSchlick(VdotH, F0);
+
+            // For metals, multiply by albedo; for dielectrics, use white
+            glm::vec3 specColor = glm::mix(glm::vec3(1.0f), albedo, metallic);
+
+            // Weight by fresnel and compensate for probability
+            pathSegment.color *= specColor * F / specularProbability;
+
+            // Set up new ray
+            pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
+            pathSegment.ray.direction = wi;
+            pathSegment.prevIsSpecular = true;
+        }
+        else {
+            // Terminate if we sampled below the horizon
+            pathSegment.remainingBounces = 0;
+            pathSegment.color = glm::vec3(0.0f);
+        }
+    }
+    else {
+        // Sample diffuse lobe (only for non-metals)
+        if (metallic < 1.0f) {
+            glm::vec3 wi = calculateRandomDirectionInHemisphere(normal, rng);
+
+            // Diffuse contribution
+            glm::vec3 diffuseColor = albedo * (1.0f - metallic);
+
+            // Compensate for probability
+            pathSegment.color *= diffuseColor / (1.0f - specularProbability);
+
+            // Set up new ray
+            pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
+            pathSegment.ray.direction = wi;
+            pathSegment.prevIsSpecular = false;
+        }
+        else {
+            // Pure metal with no diffuse - terminate
+            pathSegment.remainingBounces = 0;
+            pathSegment.color = glm::vec3(0.0f);
+        }
+    }
+
+    // Add direct lighting contribution
+    directLight = clamp(directLight, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
+    pathSegment.color += directLight;
+}
+
 __device__ void shadeDiffuseMIS(
     PathSegment& pathSegment,
     const ShadeableIntersection& intersection,
@@ -827,114 +1091,6 @@ __host__ __device__ void shadeRefractive(
 }
 
 // ===== MAIN SHADING KERNEL =====
-__global__ void shadeMaterial(
-    int iter,
-    int num_paths,
-    ShadeableIntersection* shadeableIntersections,
-    PathSegment* pathSegments,
-    Material* materials,
-	EnvironmentMap envMap,
-    bool firstIter)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_paths) return;
-
-    // Skip already terminated paths
-    if (pathSegments[idx].remainingBounces <= 0) {
-        return;
-    }
-
-    ShadeableIntersection intersection = shadeableIntersections[idx];
-
-    if (intersection.t > 0.0f) // Ray hit something
-    {
-        
-
-        Material material = materials[intersection.materialId];
-        glm::vec3 materialColor = material.color;
-
-        // Handle light sources
-        if (material.emittance > 0.0f) {
-            // Ray hit a light - accumulate emission and terminate
-            pathSegments[idx].color *= (materialColor * material.emittance);
-            pathSegments[idx].remainingBounces = 0;
-            return;
-        }
-
-        // Handle diffuse materials
-        // Decrement bounces first
-        pathSegments[idx].remainingBounces--;
-
-        // Check if we should continue
-        if (pathSegments[idx].remainingBounces <= 0) {
-            // Maximum depth reached without hitting light
-            // The path contributes nothing (black)
-            pathSegments[idx].color = glm::vec3(0.0f);
-            return;
-        }
-
-        // Set up RNG with proper seed
-        thrust::default_random_engine rng = makeSeededRandomEngine(
-            iter, idx, pathSegments[idx].remainingBounces);
-        thrust::uniform_real_distribution<float> u01(0, 1);
-
-		MaterialType mType = material.type;
-
-        switch (mType) {
-        case DIFFUSE:
-			pathSegments[idx].prevIsSpecular = false;
-            // TODO: implement MIS
-            shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
-            break;
-
-		case SPECULAR:
-            pathSegments[idx].prevIsSpecular = true;
-			shadeSpecular(pathSegments[idx], intersection, materialColor);
-			break;
-
-		case REFRACTIVE:
-            pathSegments[idx].prevIsSpecular = true;
-			shadeRefractive(pathSegments[idx], intersection, materialColor, material.indexOfRefraction, rng);
-			break;
-
-        default:
-            pathSegments[idx].prevIsSpecular = false;
-            shadeDiffuse(pathSegments[idx], intersection, materialColor, rng);
-            break;
-        }
-
-    }
-    else {
-        
-
-        if (envMap.enabled) {
-            glm::vec3 envColor = sampleEnvironmentMap(pathSegments[idx].ray.direction, envMap);
-            if (firstIter) {
-                // Direct visibility of environment
-                pathSegments[idx].color *= envColor;
-            }
-            else if (pathSegments[idx].prevIsSpecular) {
-                // Environment visible through reflection/refraction
-                pathSegments[idx].color *= envColor;
-            }
-            else {
-                // Diffuse bounce missed - could use ambient or black
-                // Using environment as ambient light
-                pathSegments[idx].color *= envColor * 0.5f; // Reduced contribution
-            }
-        }
-        else {
-            // No environment map - use black
-            pathSegments[idx].color *= glm::vec3(0.0f);
-        }
-
-        //pathSegments[idx].color = glm::vec3(0.0f);
-        pathSegments[idx].remainingBounces = 0;
-    }
-}
-
-// ===== MODIFIED SHADING KERNEL =====
-
 __global__ void shadeMaterialMIS(
     int iter,
     int num_paths,
@@ -998,10 +1154,16 @@ __global__ void shadeMaterialMIS(
                 material.indexOfRefraction, rng);
             break;
 
+        case PBR:
+            // PBR materials can be both specular and diffuse depending on parameters
+            // Consider it specular if it's smooth and metallic
+            pathSegments[idx].prevIsSpecular = (material.roughness < 0.1f && material.metallic > 0.5f);
+            shadePBR(pathSegments[idx], intersection, material,
+                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
+            break;
+
         default:
             pathSegments[idx].prevIsSpecular = false;
-            shadeDiffuseMIS(pathSegments[idx], intersection, materialColor,
-                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
         }
     }
@@ -1017,6 +1179,77 @@ __global__ void shadeMaterialMIS(
             }
             else {
                 pathSegments[idx].color *= envColor * 0.5f;
+            }
+        }
+        else {
+            pathSegments[idx].color *= glm::vec3(0.0f);
+        }
+        pathSegments[idx].remainingBounces = 0;
+    }
+}
+
+// ===== MODIFIED MAIN SHADING KERNEL =====
+__global__ void shadeMaterialPBR(
+    int iter,
+    int num_paths,
+    ShadeableIntersection* shadeableIntersections,
+    PathSegment* pathSegments,
+    Material* materials,
+    Geom* geoms,
+    int num_geoms,
+    LightInfo* lights,
+    int num_lights,
+    EnvironmentMap envMap,
+    bool firstIter,
+    bool useMIS
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_paths) return;
+
+    if (pathSegments[idx].remainingBounces <= 0) {
+        return;
+    }
+
+    ShadeableIntersection intersection = shadeableIntersections[idx];
+
+    if (intersection.t > 0.0f) {
+        Material material = materials[intersection.materialId];
+        glm::vec3 materialColor = material.color;
+
+        // Handle light sources
+        if (material.emittance > 0.0f) {
+            pathSegments[idx].color *= (materialColor * material.emittance);
+            pathSegments[idx].remainingBounces = 0;
+            return;
+        }
+
+        pathSegments[idx].remainingBounces--;
+
+        if (pathSegments[idx].remainingBounces <= 0) {
+            pathSegments[idx].color = glm::vec3(0.0f);
+            return;
+        }
+
+        thrust::default_random_engine rng = makeSeededRandomEngine(
+            iter, idx, pathSegments[idx].remainingBounces);
+
+        // Use unified PBR shading instead of material type switch
+        shadePBR(pathSegments[idx], intersection, material,
+            geoms, num_geoms, materials, lights, num_lights,
+            envMap, rng);
+    }
+    else {
+        // Handle environment map or background
+        if (envMap.enabled) {
+            glm::vec3 envColor = sampleEnvironmentMap(pathSegments[idx].ray.direction, envMap);
+            if (firstIter) {
+                pathSegments[idx].color *= envColor;
+            }
+            else if (pathSegments[idx].prevIsSpecular) {
+                pathSegments[idx].color *= envColor;
+            }
+            else {
+                pathSegments[idx].color *= envColor * 0.5f; // Reduced contribution for diffuse misses
             }
         }
         else {
@@ -1142,15 +1375,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
 
-   //     shadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
-   //         iter,
-   //         num_paths,
-   //         dev_intersections,
-   //         dev_paths,
-   //         dev_materials,
-			//dev_environmentMap,
-   //         firstIter
-   //     );
         shadeMaterialMIS << <numblocksPathSegmentTracing, blockSize1d >> > (
             iter,
             num_paths,
@@ -1164,6 +1388,22 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_environmentMap,
             firstIter
             );
+
+        //shadeMaterialPBR << <numblocksPathSegmentTracing, blockSize1d >> > (
+        //    iter,
+        //    num_paths,
+        //    dev_intersections,
+        //    dev_paths,
+        //    dev_materials,
+        //    dev_geoms,
+        //    hst_scene->geoms.size(),
+        //    dev_lights,
+        //    num_lights,
+        //    dev_environmentMap,
+        //    firstIter,
+        //    true  // Enable MIS for better quality
+        //    );
+
 		cudaDeviceSynchronize();
 
         if (firstIter) {
