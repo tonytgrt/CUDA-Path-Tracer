@@ -978,8 +978,6 @@ __global__ void shadeMaterialMIS(
         thrust::default_random_engine rng = makeSeededRandomEngine(
             iter, idx, pathSegments[idx].remainingBounces);
 
-        // TODO: Instead of distinguishing between material types,
-		// use transparency, roughness, and metallic properties
         MaterialType mType = material.type;
         switch (mType) {
         case DIFFUSE:
