@@ -9,6 +9,7 @@
 // Add STB Image implementation for HDR loading
 #include "stb_image.h"
 
+
 #include <fstream>
 #include <iostream>
 #include <string>
