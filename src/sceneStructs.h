@@ -12,7 +12,8 @@
 enum GeomType
 {
     SPHERE,
-    CUBE
+    CUBE,
+    GLTF_MESH
 };
 
 enum MaterialType
@@ -23,6 +24,30 @@ enum MaterialType
     PBR,
     EMITTING
 };
+
+struct Texture
+{
+    unsigned char* data;
+    int width;
+    int height;
+    int components; // 3 for RGB, 4 for RGBA
+};
+
+struct Triangle
+{
+    glm::vec3 v0, v1, v2;    // Vertices
+    glm::vec3 n0, n1, n2;    // Normals (for smooth shading)
+    glm::vec2 uv0, uv1, uv2; // Texture coordinates
+    int materialId;
+};
+
+struct MeshData
+{
+    std::vector<Triangle> triangles;
+    glm::vec3 boundingBoxMin;
+    glm::vec3 boundingBoxMax;
+};
+
 
 struct Ray
 {
@@ -40,6 +65,11 @@ struct Geom
     glm::mat4 transform;
     glm::mat4 inverseTransform;
     glm::mat4 invTranspose;
+
+    // Add mesh data for GLTF objects
+    MeshData* meshData;  // Pointer to mesh data (nullptr for non-mesh objects)
+    int triangleStart;   // Index into global triangle buffer
+    int triangleCount;   // Number of triangles in this mesh
 };
 
 struct Material
@@ -56,6 +86,16 @@ struct Material
     float indexOfRefraction;
     float emittance;
 	enum MaterialType type;
+
+    // Add texture indices (-1 means no texture)
+    int baseColorTextureIdx;
+    int metallicRoughnessTextureIdx;
+    int normalTextureIdx;
+    int emissiveTextureIdx;
+    int occlusionTextureIdx;
+
+    // PBR factors (used when textures are not present)
+    glm::vec3 emissiveFactor;
 };
 
 struct LightInfo {
