@@ -94,6 +94,8 @@ static EnvironmentMap dev_environmentMap;
 static glm::vec3* dev_envmap_data = NULL;
 static LightInfo* dev_lights = NULL;
 static int num_lights = 0;
+static Triangle* dev_triangles = NULL;
+static int total_triangles = 0;
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -193,6 +195,36 @@ void pathtraceInit(Scene* scene)
         dev_environmentMap.data = nullptr;
     }
 
+    total_triangles = 0;
+    for (const auto& mesh : scene->meshes) {
+        total_triangles += mesh.triangles.size();
+    }
+
+    if (total_triangles > 0) {
+        // Allocate triangle buffer on GPU
+        cudaMalloc(&dev_triangles, total_triangles * sizeof(Triangle));
+
+        // Copy triangles to GPU
+        int offset = 0;
+        for (int g = 0; g < scene->geoms.size(); g++) {
+            if (scene->geoms[g].type == GLTF_MESH && scene->geoms[g].meshData != nullptr) {
+                // Set triangle start index for this mesh
+                hst_scene->geoms[g].triangleStart = offset;
+
+                // Copy triangles
+                cudaMemcpy(dev_triangles + offset,
+                    scene->geoms[g].meshData->triangles.data(),
+                    scene->geoms[g].meshData->triangles.size() * sizeof(Triangle),
+                    cudaMemcpyHostToDevice);
+
+                offset += scene->geoms[g].meshData->triangles.size();
+            }
+        }
+    }
+
+    // Copy updated geoms with triangle indices
+    cudaMemcpy(dev_geoms, scene->geoms.data(), scene->geoms.size() * sizeof(Geom), cudaMemcpyHostToDevice);
+
     checkCUDAError("pathtraceInit");
 }
 
@@ -214,6 +246,11 @@ void pathtraceFree()
     if (dev_lights != NULL) {
         cudaFree(dev_lights);
         dev_lights = NULL;
+    }
+
+    if (dev_triangles != NULL) {
+        cudaFree(dev_triangles);
+        dev_triangles = NULL;
     }
 
     checkCUDAError("pathtraceFree");
@@ -260,7 +297,9 @@ __global__ void computeIntersections(
     PathSegment* pathSegments,
     Geom* geoms,
     int geoms_size,
-    ShadeableIntersection* intersections)
+    Triangle* triangles,  // Add triangle buffer parameter
+    ShadeableIntersection* intersections,
+    Material* materials)  // Add materials to handle per-triangle materials
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -274,34 +313,46 @@ __global__ void computeIntersections(
         float t_min = FLT_MAX;
         int hit_geom_index = -1;
         bool outside = true;
+        int hit_material_id = -1;
 
         glm::vec3 tmp_intersect;
         glm::vec3 tmp_normal;
+        bool tmp_outside;
+        glm::vec2 tmp_uv;
+        int tmp_material_id;
 
-        // naive parse through global geoms
-
+        // Parse through all geometries
         for (int i = 0; i < geoms_size; i++)
         {
             Geom& geom = geoms[i];
 
             if (geom.type == CUBE)
             {
-                t = boxIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+                t = boxIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, tmp_outside);
+                tmp_material_id = geom.materialid;
             }
             else if (geom.type == SPHERE)
             {
-                t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+                t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, tmp_outside);
+                tmp_material_id = geom.materialid;
             }
-            // TODO: add more intersection tests here... triangle? metaball? CSG?
+            else if (geom.type == GLTF_MESH)
+            {
+                t = meshIntersectionTest(geom, triangles, pathSegment.ray,
+                    tmp_intersect, tmp_normal, tmp_outside,
+                    tmp_uv, tmp_material_id);
+                // Note: tmp_material_id is set by meshIntersectionTest based on triangle material
+            }
 
-            // Compute the minimum t from the intersection tests to determine what
-            // scene geometry object was hit first.
+            // Update closest intersection
             if (t > 0.0f && t_min > t)
             {
                 t_min = t;
                 hit_geom_index = i;
                 intersect_point = tmp_intersect;
                 normal = tmp_normal;
+                outside = tmp_outside;
+                hit_material_id = tmp_material_id;
             }
         }
 
@@ -311,9 +362,9 @@ __global__ void computeIntersections(
         }
         else
         {
-            // The ray hits something
+            // Record intersection
             intersections[path_index].t = t_min;
-            intersections[path_index].materialId = geoms[hit_geom_index].materialid;
+            intersections[path_index].materialId = hit_material_id;
             intersections[path_index].surfaceNormal = normal;
         }
     }
@@ -1354,14 +1405,16 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
         // tracing
         dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
-        computeIntersections<<<numblocksPathSegmentTracing, blockSize1d>>> (
+        computeIntersections << <numblocksPathSegmentTracing, blockSize1d >> > (
             depth,
             num_paths,
             dev_paths,
             dev_geoms,
             hst_scene->geoms.size(),
-            dev_intersections
-        );
+            dev_triangles,  // Add triangle buffer
+            dev_intersections,
+            dev_materials  // Add materials
+            );
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
         depth++;

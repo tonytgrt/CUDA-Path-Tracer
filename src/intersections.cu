@@ -111,3 +111,134 @@ __host__ __device__ float sphereIntersectionTest(
 
     return glm::length(r.origin - intersectionPoint);
 }
+
+__host__ __device__ float triangleIntersectionTest(
+    const glm::vec3& v0,
+    const glm::vec3& v1,
+    const glm::vec3& v2,
+    const Ray& r,
+    glm::vec3& intersect,
+    glm::vec3& barycentrics)
+{
+    const float EPSILON = 0.0000001f;
+
+    glm::vec3 edge1 = v1 - v0;
+    glm::vec3 edge2 = v2 - v0;
+    glm::vec3 h = glm::cross(r.direction, edge2);
+    float a = glm::dot(edge1, h);
+
+    // Ray is parallel to triangle
+    if (a > -EPSILON && a < EPSILON) {
+        return -1.0f;
+    }
+
+    float f = 1.0f / a;
+    glm::vec3 s = r.origin - v0;
+    float u = f * glm::dot(s, h);
+
+    if (u < 0.0f || u > 1.0f) {
+        return -1.0f;
+    }
+
+    glm::vec3 q = glm::cross(s, edge1);
+    float v = f * glm::dot(r.direction, q);
+
+    if (v < 0.0f || u + v > 1.0f) {
+        return -1.0f;
+    }
+
+    // Calculate t to find intersection point
+    float t = f * glm::dot(edge2, q);
+
+    if (t > EPSILON) {
+        // Calculate barycentric coordinates
+        float w = 1.0f - u - v;
+        barycentrics = glm::vec3(w, u, v);  // (1-u-v, u, v) for (v0, v1, v2)
+
+        // Calculate intersection point
+        intersect = r.origin + r.direction * t;
+
+        return t;
+    }
+
+    return -1.0f;
+}
+
+__host__ __device__ float meshIntersectionTest(
+    const Geom& mesh,
+    const Triangle* triangles,
+    const Ray& r,
+    glm::vec3& intersectionPoint,
+    glm::vec3& normal,
+    bool& outside,
+    glm::vec2& uv,
+    int& materialId)
+{
+    // Transform ray to object space
+    Ray localRay;
+    localRay.origin = multiplyMV(mesh.inverseTransform, glm::vec4(r.origin, 1.0f));
+    localRay.direction = glm::normalize(multiplyMV(mesh.inverseTransform, glm::vec4(r.direction, 0.0f)));
+
+    float t_min = FLT_MAX;
+    glm::vec3 bestBarycentrics;
+    int bestTriangleIdx = -1;
+    glm::vec3 bestIntersect;
+
+    // Test all triangles in the mesh
+    for (int i = 0; i < mesh.triangleCount; i++) {
+        int triIdx = mesh.triangleStart + i;
+        const Triangle& tri = triangles[triIdx];
+
+        glm::vec3 barycentrics;
+        glm::vec3 intersect;
+
+        float t = triangleIntersectionTest(
+            tri.v0, tri.v1, tri.v2,
+            localRay,
+            intersect,
+            barycentrics
+        );
+
+        if (t > 0.0f && t < t_min) {
+            t_min = t;
+            bestBarycentrics = barycentrics;
+            bestTriangleIdx = triIdx;
+            bestIntersect = intersect;
+        }
+    }
+
+    if (bestTriangleIdx < 0) {
+        return -1.0f;
+    }
+
+    // We found an intersection
+    const Triangle& hitTri = triangles[bestTriangleIdx];
+
+    // Interpolate normal using barycentric coordinates
+    glm::vec3 localNormal = glm::normalize(
+        bestBarycentrics.x * hitTri.n0 +
+        bestBarycentrics.y * hitTri.n1 +
+        bestBarycentrics.z * hitTri.n2
+    );
+
+    // Interpolate UV coordinates
+    uv = bestBarycentrics.x * hitTri.uv0 +
+        bestBarycentrics.y * hitTri.uv1 +
+        bestBarycentrics.z * hitTri.uv2;
+
+    // Get material ID from triangle
+    materialId = hitTri.materialId;
+
+    // Transform intersection point and normal back to world space
+    intersectionPoint = multiplyMV(mesh.transform, glm::vec4(bestIntersect, 1.0f));
+    normal = glm::normalize(multiplyMV(mesh.invTranspose, glm::vec4(localNormal, 0.0f)));
+
+    // Determine if ray is coming from outside
+    // (dot product of ray direction and normal should be negative for outside hits)
+    outside = glm::dot(r.direction, normal) < 0.0f;
+    if (!outside) {
+        normal = -normal;
+    }
+
+    return glm::length(r.origin - intersectionPoint);
+}

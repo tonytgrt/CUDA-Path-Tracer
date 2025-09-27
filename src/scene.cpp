@@ -449,6 +449,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
         if (type == "cube")
         {
             newGeom.type = CUBE;
+            newGeom.materialid = MatNameToID[p["MATERIAL"]];
         }
         else if (type == "sphere")
         {
@@ -482,7 +483,6 @@ void Scene::loadFromJSON(const std::string& jsonName)
             int defaultMatIdx = loadGLTFModel(fullPath, newGeom, translation, rotation, scaleVec);
             newGeom.materialid = defaultMatIdx; // This is just for compatibility
         }
-        newGeom.materialid = MatNameToID[p["MATERIAL"]];
         const auto& trans = p["TRANS"];
         const auto& rotat = p["ROTAT"];
         const auto& scale = p["SCALE"];
