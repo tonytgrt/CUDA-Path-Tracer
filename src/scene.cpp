@@ -186,6 +186,28 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
         return;
     }
 
+    // CRITICAL FIX: Store the current material count as offset
+    int materialOffset = materials.size();
+
+    // Create a mapping from GLTF material indices to scene material indices
+    std::vector<int> gltfMaterialToSceneMaterial;
+
+    // Load all GLTF materials and add them to the scene's material list
+    for (const auto& gltfMat : model.materials) {
+        int sceneMaterialIdx = loadGLTFMaterial(gltfMat, model);
+        gltfMaterialToSceneMaterial.push_back(sceneMaterialIdx);
+    }
+
+    // If no materials in GLTF, create a default mapping
+    if (gltfMaterialToSceneMaterial.empty()) {
+        // Use the first material from JSON if available, or create a default
+        gltfMaterialToSceneMaterial.push_back(0);
+    }
+
+    cout << "Loaded " << model.materials.size() << " materials from GLTF" << endl;
+    cout << "Material offset: " << materialOffset << endl;
+    cout << "Total materials in scene: " << materials.size() << endl;
+
     // Create a new MeshData to store all triangles
     MeshData meshData;
     meshData.boundingBoxMin = glm::vec3(FLT_MAX);
@@ -255,6 +277,20 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                 &texBuffer.data[texBufferView.byteOffset + texAccessor.byteOffset]);
                         }
 
+                        // CRITICAL FIX: Determine the correct material ID for this primitive
+                        int sceneMaterialId = 0; // Default material
+                        if (primitive.material >= 0 && primitive.material < gltfMaterialToSceneMaterial.size()) {
+                            // Use the mapped scene material index
+                            sceneMaterialId = gltfMaterialToSceneMaterial[primitive.material];
+                        }
+                        else if (!gltfMaterialToSceneMaterial.empty()) {
+                            // If no material specified, use the first GLTF material
+                            sceneMaterialId = gltfMaterialToSceneMaterial[0];
+                        }
+
+                        cout << "Primitive material: GLTF index " << primitive.material
+                            << " -> Scene index " << sceneMaterialId << endl;
+
                         // Process triangles
                         if (primitive.indices >= 0) {
                             // Indexed geometry
@@ -267,7 +303,6 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
 
                                 // Get vertex indices based on component type
                                 unsigned int idx[3];
-
                                 if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
                                     const unsigned short* indices = reinterpret_cast<const unsigned short*>(
                                         &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset]);
@@ -282,15 +317,9 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                     idx[1] = indices[i + 1];
                                     idx[2] = indices[i + 2];
                                 }
-                                else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
-                                    const unsigned char* indices = reinterpret_cast<const unsigned char*>(
-                                        &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset]);
-                                    idx[0] = indices[i];
-                                    idx[1] = indices[i + 1];
-                                    idx[2] = indices[i + 2];
-                                }
                                 else {
-                                    continue; // Unsupported index type
+                                    cout << "Unsupported index type" << endl;
+                                    continue;
                                 }
 
                                 // Set vertex positions
@@ -305,7 +334,6 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                     tri.n2 = glm::vec3(normals[idx[2] * 3], normals[idx[2] * 3 + 1], normals[idx[2] * 3 + 2]);
                                 }
                                 else {
-                                    // Calculate face normal
                                     glm::vec3 faceNormal = glm::normalize(glm::cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
                                     tri.n0 = tri.n1 = tri.n2 = faceNormal;
                                 }
@@ -320,8 +348,8 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                     tri.uv0 = tri.uv1 = tri.uv2 = glm::vec2(0.0f);
                                 }
 
-                                // Set material (use primitive material or default)
-                                tri.materialId = primitive.material >= 0 ? primitive.material : 0;
+                                // CRITICAL FIX: Use the mapped scene material ID
+                                tri.materialId = sceneMaterialId;
 
                                 // Update bounding box
                                 meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v0);
@@ -365,7 +393,8 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                     tri.uv0 = tri.uv1 = tri.uv2 = glm::vec2(0.0f);
                                 }
 
-                                tri.materialId = primitive.material >= 0 ? primitive.material : 0;
+                                // CRITICAL FIX: Use the mapped scene material ID
+                                tri.materialId = sceneMaterialId;
 
                                 // Update bounding box
                                 meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v0);
@@ -400,16 +429,18 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     cout << "Bounding box: (" << meshData.boundingBoxMin.x << "," << meshData.boundingBoxMin.y << "," << meshData.boundingBoxMin.z << ") to ("
         << meshData.boundingBoxMax.x << "," << meshData.boundingBoxMax.y << "," << meshData.boundingBoxMax.z << ")" << endl;
 
-    // Debug first triangle
+    // Debug: Print material assignment summary
     if (meshData.triangles.size() > 0) {
-        cout << "First triangle vertices: " << endl;
-        cout << "  v0: " << glm::to_string(meshData.triangles[0].v0) << endl;
-        cout << "  v1: " << glm::to_string(meshData.triangles[0].v1) << endl;
-        cout << "  v2: " << glm::to_string(meshData.triangles[0].v2) << endl;
+        std::unordered_map<int, int> materialCounts;
+        for (const auto& tri : meshData.triangles) {
+            materialCounts[tri.materialId]++;
+        }
+        cout << "Material usage in mesh:" << endl;
+        for (const auto& pair : materialCounts) {
+            cout << "  Material " << pair.first << ": " << pair.second << " triangles" << endl;
+        }
     }
 }
-
-
 
 void Scene::loadFromJSON(const std::string& jsonName)
 {
