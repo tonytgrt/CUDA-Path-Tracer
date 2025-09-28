@@ -154,7 +154,7 @@ int Scene::loadGLTFMaterial(const tinygltf::Material& gltfMat,
 }
 
 // Updated loadGLTFModel function
-int Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
+void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     const glm::vec3& translation,
     const glm::vec3& rotation,
     const glm::vec3& scale) {
@@ -178,36 +178,12 @@ int Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
 
     if (!err.empty()) {
         cout << "GLTF Error: " << err << endl;
-        return -1;
+        return;
     }
 
     if (!ret) {
         cout << "Failed to load glTF: " << gltfPath << endl;
-        return -1;
-    }
-
-    // Load all materials from the glTF file
-    std::vector<int> materialMapping;
-    for (const auto& gltfMat : model.materials) {
-        int matIdx = loadGLTFMaterial(gltfMat, model);
-        materialMapping.push_back(matIdx);
-    }
-
-    // If no materials, create a default one
-    if (materialMapping.empty()) {
-        Material defaultMat;
-        defaultMat.type = PBR;
-        defaultMat.color = glm::vec3(0.8f);
-        defaultMat.roughness = 0.5f;
-        defaultMat.metallic = 0.0f;
-        defaultMat.transparency = 0.0f;
-        defaultMat.baseColorTextureIdx = -1;
-        defaultMat.metallicRoughnessTextureIdx = -1;
-        defaultMat.normalTextureIdx = -1;
-        defaultMat.emissiveTextureIdx = -1;
-        defaultMat.occlusionTextureIdx = -1;
-        materials.push_back(defaultMat);
-        materialMapping.push_back(materials.size() - 1);
+        return;
     }
 
     // Create a new MeshData to store all triangles
@@ -215,54 +191,203 @@ int Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     meshData.boundingBoxMin = glm::vec3(FLT_MAX);
     meshData.boundingBoxMax = glm::vec3(-FLT_MAX);
 
-    // Process all meshes in the model
-    for (const auto& mesh : model.meshes) {
-        for (const auto& primitive : mesh.primitives) {
-            if (primitive.mode != TINYGLTF_MODE_TRIANGLES) {
-                cout << "Warning: Non-triangle primitive skipped" << endl;
-                continue;
-            }
+    // Process all nodes to get meshes
+    for (const auto& scene : model.scenes) {
+        for (int nodeIdx : scene.nodes) {
+            std::function<void(int, glm::mat4)> processNode = [&](int nodeIdx, glm::mat4 parentTransform) {
+                if (nodeIdx < 0 || nodeIdx >= model.nodes.size()) return;
 
-            // Get the material index for this primitive
-            int materialIdx = 0; // Default material
-            if (primitive.material >= 0 && primitive.material < materialMapping.size()) {
-                materialIdx = materialMapping[primitive.material];
-            }
+                const tinygltf::Node& node = model.nodes[nodeIdx];
 
-            // Get accessor for positions
-            const tinygltf::Accessor& posAccessor = model.accessors[primitive.attributes.at("POSITION")];
-            const tinygltf::BufferView& posBufferView = model.bufferViews[posAccessor.bufferView];
-            const tinygltf::Buffer& posBuffer = model.buffers[posBufferView.buffer];
+                // Calculate node transform
+                glm::mat4 nodeTransform = parentTransform;
+                if (node.matrix.size() == 16) {
+                    glm::mat4 localTransform;
+                    for (int i = 0; i < 4; ++i) {
+                        for (int j = 0; j < 4; ++j) {
+                            localTransform[j][i] = static_cast<float>(node.matrix[i * 4 + j]);
+                        }
+                    }
+                    nodeTransform = parentTransform * localTransform;
+                }
 
-            const float* positions = reinterpret_cast<const float*>(
-                &posBuffer.data[posBufferView.byteOffset + posAccessor.byteOffset]);
+                // Process mesh if present
+                if (node.mesh >= 0 && node.mesh < model.meshes.size()) {
+                    const tinygltf::Mesh& mesh = model.meshes[node.mesh];
 
-            // Get normals if available
-            const float* normals = nullptr;
-            if (primitive.attributes.find("NORMAL") != primitive.attributes.end()) {
-                const tinygltf::Accessor& normAccessor = model.accessors[primitive.attributes.at("NORMAL")];
-                const tinygltf::BufferView& normBufferView = model.bufferViews[normAccessor.bufferView];
-                const tinygltf::Buffer& normBuffer = model.buffers[normBufferView.buffer];
-                normals = reinterpret_cast<const float*>(
-                    &normBuffer.data[normBufferView.byteOffset + normAccessor.byteOffset]);
-            }
+                    for (const auto& primitive : mesh.primitives) {
+                        if (primitive.mode != TINYGLTF_MODE_TRIANGLES) {
+                            cout << "Warning: Non-triangle primitive skipped" << endl;
+                            continue;
+                        }
 
-            // Get texture coordinates if available
-            const float* texcoords = nullptr;
-            if (primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end()) {
-                const tinygltf::Accessor& texAccessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-                const tinygltf::BufferView& texBufferView = model.bufferViews[texAccessor.bufferView];
-                const tinygltf::Buffer& texBuffer = model.buffers[texBufferView.buffer];
-                texcoords = reinterpret_cast<const float*>(
-                    &texBuffer.data[texBufferView.byteOffset + texAccessor.byteOffset]);
-            }
+                        // Check if POSITION attribute exists
+                        if (primitive.attributes.find("POSITION") == primitive.attributes.end()) {
+                            cout << "Warning: Primitive without POSITION attribute skipped" << endl;
+                            continue;
+                        }
 
-            // Process triangles (rest of the triangle loading code remains the same)
-            if (primitive.indices >= 0) {
-                // ... [same triangle loading code as before] ...
-                // But add this when creating each triangle:
-                // tri.materialId = materialIdx;
-            }
+                        // Get accessor for positions
+                        const tinygltf::Accessor& posAccessor = model.accessors[primitive.attributes.at("POSITION")];
+                        const tinygltf::BufferView& posBufferView = model.bufferViews[posAccessor.bufferView];
+                        const tinygltf::Buffer& posBuffer = model.buffers[posBufferView.buffer];
+
+                        const float* positions = reinterpret_cast<const float*>(
+                            &posBuffer.data[posBufferView.byteOffset + posAccessor.byteOffset]);
+
+                        // Get normals if available
+                        const float* normals = nullptr;
+                        if (primitive.attributes.find("NORMAL") != primitive.attributes.end()) {
+                            const tinygltf::Accessor& normAccessor = model.accessors[primitive.attributes.at("NORMAL")];
+                            const tinygltf::BufferView& normBufferView = model.bufferViews[normAccessor.bufferView];
+                            const tinygltf::Buffer& normBuffer = model.buffers[normBufferView.buffer];
+                            normals = reinterpret_cast<const float*>(
+                                &normBuffer.data[normBufferView.byteOffset + normAccessor.byteOffset]);
+                        }
+
+                        // Get texture coordinates if available
+                        const float* texcoords = nullptr;
+                        if (primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end()) {
+                            const tinygltf::Accessor& texAccessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+                            const tinygltf::BufferView& texBufferView = model.bufferViews[texAccessor.bufferView];
+                            const tinygltf::Buffer& texBuffer = model.buffers[texBufferView.buffer];
+                            texcoords = reinterpret_cast<const float*>(
+                                &texBuffer.data[texBufferView.byteOffset + texAccessor.byteOffset]);
+                        }
+
+                        // Process triangles
+                        if (primitive.indices >= 0) {
+                            // Indexed geometry
+                            const tinygltf::Accessor& indexAccessor = model.accessors[primitive.indices];
+                            const tinygltf::BufferView& indexBufferView = model.bufferViews[indexAccessor.bufferView];
+                            const tinygltf::Buffer& indexBuffer = model.buffers[indexBufferView.buffer];
+
+                            for (size_t i = 0; i < indexAccessor.count; i += 3) {
+                                Triangle tri;
+
+                                // Get vertex indices based on component type
+                                unsigned int idx[3];
+
+                                if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                                    const unsigned short* indices = reinterpret_cast<const unsigned short*>(
+                                        &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset]);
+                                    idx[0] = indices[i];
+                                    idx[1] = indices[i + 1];
+                                    idx[2] = indices[i + 2];
+                                }
+                                else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+                                    const unsigned int* indices = reinterpret_cast<const unsigned int*>(
+                                        &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset]);
+                                    idx[0] = indices[i];
+                                    idx[1] = indices[i + 1];
+                                    idx[2] = indices[i + 2];
+                                }
+                                else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+                                    const unsigned char* indices = reinterpret_cast<const unsigned char*>(
+                                        &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset]);
+                                    idx[0] = indices[i];
+                                    idx[1] = indices[i + 1];
+                                    idx[2] = indices[i + 2];
+                                }
+                                else {
+                                    continue; // Unsupported index type
+                                }
+
+                                // Set vertex positions
+                                tri.v0 = glm::vec3(positions[idx[0] * 3], positions[idx[0] * 3 + 1], positions[idx[0] * 3 + 2]);
+                                tri.v1 = glm::vec3(positions[idx[1] * 3], positions[idx[1] * 3 + 1], positions[idx[1] * 3 + 2]);
+                                tri.v2 = glm::vec3(positions[idx[2] * 3], positions[idx[2] * 3 + 1], positions[idx[2] * 3 + 2]);
+
+                                // Set normals
+                                if (normals) {
+                                    tri.n0 = glm::vec3(normals[idx[0] * 3], normals[idx[0] * 3 + 1], normals[idx[0] * 3 + 2]);
+                                    tri.n1 = glm::vec3(normals[idx[1] * 3], normals[idx[1] * 3 + 1], normals[idx[1] * 3 + 2]);
+                                    tri.n2 = glm::vec3(normals[idx[2] * 3], normals[idx[2] * 3 + 1], normals[idx[2] * 3 + 2]);
+                                }
+                                else {
+                                    // Calculate face normal
+                                    glm::vec3 faceNormal = glm::normalize(glm::cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+                                    tri.n0 = tri.n1 = tri.n2 = faceNormal;
+                                }
+
+                                // Set texture coordinates
+                                if (texcoords) {
+                                    tri.uv0 = glm::vec2(texcoords[idx[0] * 2], texcoords[idx[0] * 2 + 1]);
+                                    tri.uv1 = glm::vec2(texcoords[idx[1] * 2], texcoords[idx[1] * 2 + 1]);
+                                    tri.uv2 = glm::vec2(texcoords[idx[2] * 2], texcoords[idx[2] * 2 + 1]);
+                                }
+                                else {
+                                    tri.uv0 = tri.uv1 = tri.uv2 = glm::vec2(0.0f);
+                                }
+
+                                // Set material (use primitive material or default)
+                                tri.materialId = primitive.material >= 0 ? primitive.material : 0;
+
+                                // Update bounding box
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v0);
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v1);
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v2);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v0);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v1);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v2);
+
+                                meshData.triangles.push_back(tri);
+                            }
+                        }
+                        else {
+                            // Non-indexed geometry - create triangles from vertex array
+                            for (size_t i = 0; i < posAccessor.count; i += 3) {
+                                Triangle tri;
+
+                                // Set vertex positions directly
+                                tri.v0 = glm::vec3(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+                                tri.v1 = glm::vec3(positions[(i + 1) * 3], positions[(i + 1) * 3 + 1], positions[(i + 1) * 3 + 2]);
+                                tri.v2 = glm::vec3(positions[(i + 2) * 3], positions[(i + 2) * 3 + 1], positions[(i + 2) * 3 + 2]);
+
+                                // Set normals
+                                if (normals) {
+                                    tri.n0 = glm::vec3(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]);
+                                    tri.n1 = glm::vec3(normals[(i + 1) * 3], normals[(i + 1) * 3 + 1], normals[(i + 1) * 3 + 2]);
+                                    tri.n2 = glm::vec3(normals[(i + 2) * 3], normals[(i + 2) * 3 + 1], normals[(i + 2) * 3 + 2]);
+                                }
+                                else {
+                                    glm::vec3 faceNormal = glm::normalize(glm::cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+                                    tri.n0 = tri.n1 = tri.n2 = faceNormal;
+                                }
+
+                                // Set texture coordinates
+                                if (texcoords) {
+                                    tri.uv0 = glm::vec2(texcoords[i * 2], texcoords[i * 2 + 1]);
+                                    tri.uv1 = glm::vec2(texcoords[(i + 1) * 2], texcoords[(i + 1) * 2 + 1]);
+                                    tri.uv2 = glm::vec2(texcoords[(i + 2) * 2], texcoords[(i + 2) * 2 + 1]);
+                                }
+                                else {
+                                    tri.uv0 = tri.uv1 = tri.uv2 = glm::vec2(0.0f);
+                                }
+
+                                tri.materialId = primitive.material >= 0 ? primitive.material : 0;
+
+                                // Update bounding box
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v0);
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v1);
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v2);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v0);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v1);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v2);
+
+                                meshData.triangles.push_back(tri);
+                            }
+                        }
+                    }
+                }
+
+                // Process children
+                for (int childIdx : node.children) {
+                    processNode(childIdx, nodeTransform);
+                }
+                };
+
+            processNode(nodeIdx, glm::mat4(1.0f));
         }
     }
 
@@ -271,10 +396,20 @@ int Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     newGeom.meshData = &meshes.back();
     newGeom.triangleCount = meshData.triangles.size();
 
-    // Return the first material index (for backward compatibility)
-    // In reality, each triangle now has its own material
-    return materialMapping.empty() ? -1 : materialMapping[0];
+    cout << "Loaded GLTF model with " << newGeom.triangleCount << " triangles" << endl;
+    cout << "Bounding box: (" << meshData.boundingBoxMin.x << "," << meshData.boundingBoxMin.y << "," << meshData.boundingBoxMin.z << ") to ("
+        << meshData.boundingBoxMax.x << "," << meshData.boundingBoxMax.y << "," << meshData.boundingBoxMax.z << ")" << endl;
+
+    // Debug first triangle
+    if (meshData.triangles.size() > 0) {
+        cout << "First triangle vertices: " << endl;
+        cout << "  v0: " << glm::to_string(meshData.triangles[0].v0) << endl;
+        cout << "  v1: " << glm::to_string(meshData.triangles[0].v1) << endl;
+        cout << "  v2: " << glm::to_string(meshData.triangles[0].v2) << endl;
+    }
 }
+
+
 
 void Scene::loadFromJSON(const std::string& jsonName)
 {
@@ -445,6 +580,9 @@ void Scene::loadFromJSON(const std::string& jsonName)
         const auto& type = p["TYPE"];
         Geom newGeom;
         newGeom.meshData = nullptr;
+        newGeom.triangleStart = -1;  // Initialize to invalid
+        newGeom.triangleCount = 0;   // Initialize to 0
+
 
         if (type == "cube")
         {
@@ -480,8 +618,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
             glm::vec3 scaleVec = glm::vec3(scale[0], scale[1], scale[2]);
 
             // Load GLTF - it will handle its own materials
-            int defaultMatIdx = loadGLTFModel(fullPath, newGeom, translation, rotation, scaleVec);
-            newGeom.materialid = defaultMatIdx; // This is just for compatibility
+            loadGLTFModel(fullPath, newGeom, translation, rotation, scaleVec);
         }
         const auto& trans = p["TRANS"];
         const auto& rotat = p["ROTAT"];

@@ -8,7 +8,7 @@ class Scene
 {
 private:
     void loadFromJSON(const std::string& jsonName);
-    int loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
+    void loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
         const glm::vec3& translation,
         const glm::vec3& rotation,
         const glm::vec3& scale);

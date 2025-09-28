@@ -220,10 +220,12 @@ void pathtraceInit(Scene* scene)
                 offset += scene->geoms[g].meshData->triangles.size();
             }
         }
+
+        // Copy updated geoms with triangle indices
+        cudaMemcpy(dev_geoms, scene->geoms.data(), scene->geoms.size() * sizeof(Geom), cudaMemcpyHostToDevice);
     }
 
-    // Copy updated geoms with triangle indices
-    cudaMemcpy(dev_geoms, scene->geoms.data(), scene->geoms.size() * sizeof(Geom), cudaMemcpyHostToDevice);
+    
 
     checkCUDAError("pathtraceInit");
 }
