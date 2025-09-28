@@ -1,16 +1,16 @@
 {
     "Materials": {
-        "brushed_metal": {
-            "TYPE": "PBR",
-            "RGB": [0.7, 0.7, 0.8],
-            "ROUGHNESS": 0.3,
-            "METALLIC": 1.0,
-            "TRANSPARENCY": 0.0
-        },
         "polished_gold": {
             "TYPE": "PBR",
             "RGB": [1.0, 0.765, 0.336],
             "ROUGHNESS": 0.05,
+            "METALLIC": 1.0,
+            "TRANSPARENCY": 0.0
+        },
+        "brushed_metal": {
+            "TYPE": "PBR",
+            "RGB": [0.7, 0.7, 0.8],
+            "ROUGHNESS": 0.3,
             "METALLIC": 1.0,
             "TRANSPARENCY": 0.0
         },
@@ -67,17 +67,10 @@
     "Objects": [
         {
             "TYPE": "gltf",
-            "FILE": "../gltf/chessboard.glb",
+            "FILE": "../gltf/Duck.glb",
             "TRANS": [0.0, 0.0, 0.0],
             "ROTAT": [0.0, 0.0, 0.0],
-            "SCALE": [2.0, 2.0, 2.0]
-        },
-        {
-            "TYPE": "cube",
-            "MATERIAL": "light",
-            "TRANS": [0.0, 4.0, 12.0],
-            "ROTAT": [90.0, 0.0, 0.0],
-            "SCALE": [10.0, 0.1, 10.0]
+            "SCALE": [0.1, 0.1, 0.1]
         }
     ]
 }

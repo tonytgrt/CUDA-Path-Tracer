@@ -11,6 +11,9 @@ CUDA Path Tracer
 
 ## WIP Renders
 
+### GLTF Mesh Model without textures
+![](/img/wip-6.png)
+
 ### PBR Materials
 ![](/img/wip-5.png)
 

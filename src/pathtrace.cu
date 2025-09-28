@@ -124,6 +124,7 @@ void initializeLights(Scene* scene) {
 
     for (int i = 0; i < scene->geoms.size(); i++) {
         int matId = scene->geoms[i].materialid;
+        if (matId < 0) continue;
         if (scene->materials[matId].emittance > 0.0f) {
             LightInfo info;
             info.geomIdx = i;
