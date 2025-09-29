@@ -473,6 +473,17 @@ void Scene::loadFromJSON(const std::string& jsonName)
         const auto& name = item.key();
         const auto& p = item.value();
         Material newMaterial{};
+
+        newMaterial.baseColorTextureIdx = -1;
+        newMaterial.metallicRoughnessTextureIdx = -1;
+        newMaterial.normalTextureIdx = -1;
+        newMaterial.emissiveTextureIdx = -1;
+        newMaterial.occlusionTextureIdx = -1;
+
+        // Initialize other material properties
+        newMaterial.emittance = 0.0f;
+        newMaterial.indexOfRefraction = 1.0f;
+        newMaterial.emissiveFactor = glm::vec3(0.0f);
         
 
         const auto& col = p["RGB"];
