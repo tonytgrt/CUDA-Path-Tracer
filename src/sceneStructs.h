@@ -161,4 +161,13 @@ struct ShadeableIntersection
   float t;
   glm::vec3 surfaceNormal;
   int materialId;
+  glm::vec2 uv;
+};
+
+struct GPUTexture
+{
+    unsigned char* data;  // Pointer to GPU memory
+    int width;
+    int height;
+    int components;
 };

@@ -96,6 +96,8 @@ static LightInfo* dev_lights = NULL;
 static int num_lights = 0;
 static Triangle* dev_triangles = NULL;
 static int total_triangles = 0;
+static GPUTexture* dev_textures = NULL;
+static int num_textures = 0;
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -226,6 +228,38 @@ void pathtraceInit(Scene* scene)
         cudaMemcpy(dev_geoms, scene->geoms.data(), scene->geoms.size() * sizeof(Geom), cudaMemcpyHostToDevice);
     }
 
+    // Upload textures to GPU
+    num_textures = scene->textures.size();
+    if (num_textures > 0) {
+        // Allocate array of GPUTexture structures
+        cudaMalloc(&dev_textures, num_textures * sizeof(GPUTexture));
+
+        // Create temporary array to hold GPU texture info
+        std::vector<GPUTexture> gpuTextures(num_textures);
+
+        // Upload each texture
+        for (int i = 0; i < num_textures; i++) {
+            const Texture& cpuTex = scene->textures[i];
+            GPUTexture& gpuTex = gpuTextures[i];
+
+            gpuTex.width = cpuTex.width;
+            gpuTex.height = cpuTex.height;
+            gpuTex.components = cpuTex.components;
+
+            // Allocate GPU memory for texture data
+            size_t texSize = cpuTex.width * cpuTex.height * cpuTex.components;
+            cudaMalloc(&gpuTex.data, texSize);
+            cudaMemcpy(gpuTex.data, cpuTex.data, texSize, cudaMemcpyHostToDevice);
+
+            printf("Uploaded texture %d: %dx%d, %d channels, %.2f MB\n",
+                i, cpuTex.width, cpuTex.height, cpuTex.components,
+                texSize / (1024.0f * 1024.0f));
+        }
+
+        // Copy the array of texture descriptors to GPU
+        cudaMemcpy(dev_textures, gpuTextures.data(),
+            num_textures * sizeof(GPUTexture), cudaMemcpyHostToDevice);
+    }
     
 
     checkCUDAError("pathtraceInit");
@@ -254,6 +288,25 @@ void pathtraceFree()
     if (dev_triangles != NULL) {
         cudaFree(dev_triangles);
         dev_triangles = NULL;
+    }
+
+    if (dev_textures != NULL && num_textures > 0) {
+        // First, get the texture descriptors to free individual texture data
+        std::vector<GPUTexture> gpuTextures(num_textures);
+        cudaMemcpy(gpuTextures.data(), dev_textures,
+            num_textures * sizeof(GPUTexture), cudaMemcpyDeviceToHost);
+
+        // Free each texture's data
+        for (int i = 0; i < num_textures; i++) {
+            if (gpuTextures[i].data != nullptr) {
+                cudaFree(gpuTextures[i].data);
+            }
+        }
+
+        // Free the texture descriptor array
+        cudaFree(dev_textures);
+        dev_textures = NULL;
+        num_textures = 0;
     }
 
     checkCUDAError("pathtraceFree");
@@ -300,9 +353,9 @@ __global__ void computeIntersections(
     PathSegment* pathSegments,
     Geom* geoms,
     int geoms_size,
-    Triangle* triangles,  // Add triangle buffer parameter
+    Triangle* triangles,
     ShadeableIntersection* intersections,
-    Material* materials)  // Add materials to handle per-triangle materials
+    Material* materials)
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -317,11 +370,12 @@ __global__ void computeIntersections(
         int hit_geom_index = -1;
         bool outside = true;
         int hit_material_id = -1;
+        glm::vec2 hit_uv = glm::vec2(0.0f);  // ADD THIS
 
         glm::vec3 tmp_intersect;
         glm::vec3 tmp_normal;
         bool tmp_outside;
-        glm::vec2 tmp_uv;
+        glm::vec2 tmp_uv;  // Already exists
         int tmp_material_id;
 
         // Parse through all geometries
@@ -333,18 +387,19 @@ __global__ void computeIntersections(
             {
                 t = boxIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, tmp_outside);
                 tmp_material_id = geom.materialid;
+                tmp_uv = glm::vec2(0.5f);  // Default UV for primitives
             }
             else if (geom.type == SPHERE)
             {
                 t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, tmp_outside);
                 tmp_material_id = geom.materialid;
+                tmp_uv = glm::vec2(0.5f);  // Default UV for primitives
             }
             else if (geom.type == GLTF_MESH)
             {
                 t = meshIntersectionTest(geom, triangles, pathSegment.ray,
                     tmp_intersect, tmp_normal, tmp_outside,
                     tmp_uv, tmp_material_id);
-                // Note: tmp_material_id is set by meshIntersectionTest based on triangle material
             }
 
             // Update closest intersection
@@ -356,6 +411,7 @@ __global__ void computeIntersections(
                 normal = tmp_normal;
                 outside = tmp_outside;
                 hit_material_id = tmp_material_id;
+                hit_uv = tmp_uv;  // STORE UV COORDINATES
             }
         }
 
@@ -369,8 +425,61 @@ __global__ void computeIntersections(
             intersections[path_index].t = t_min;
             intersections[path_index].materialId = hit_material_id;
             intersections[path_index].surfaceNormal = normal;
+            intersections[path_index].uv = hit_uv;  // STORE UV IN INTERSECTION
         }
     }
+}
+
+__device__ glm::vec3 sampleTexture(const GPUTexture& texture, glm::vec2 uv) {
+    // Wrap UV coordinates
+    uv.x = uv.x - floorf(uv.x);
+    uv.y = uv.y - floorf(uv.y);
+
+    // Convert to pixel coordinates
+    float fx = uv.x * (texture.width - 1);
+    float fy = uv.y * (texture.height - 1);
+
+    // Bilinear interpolation
+    int x0 = (int)floorf(fx);
+    int y0 = (int)floorf(fy);
+    int x1 = min(x0 + 1, texture.width - 1);
+    int y1 = min(y0 + 1, texture.height - 1);
+
+    float wx = fx - x0;
+    float wy = fy - y0;
+
+    // Sample four neighboring pixels
+    auto getPixel = [&](int x, int y) -> glm::vec3 {
+        int idx = (y * texture.width + x) * texture.components;
+        if (texture.components == 3) {
+            return glm::vec3(
+                texture.data[idx] / 255.0f,
+                texture.data[idx + 1] / 255.0f,
+                texture.data[idx + 2] / 255.0f
+            );
+        }
+        else if (texture.components == 4) {
+            return glm::vec3(
+                texture.data[idx] / 255.0f,
+                texture.data[idx + 1] / 255.0f,
+                texture.data[idx + 2] / 255.0f
+                // Ignoring alpha for now
+            );
+        }
+        return glm::vec3(1.0f);
+        };
+
+    glm::vec3 p00 = getPixel(x0, y0);
+    glm::vec3 p10 = getPixel(x1, y0);
+    glm::vec3 p01 = getPixel(x0, y1);
+    glm::vec3 p11 = getPixel(x1, y1);
+
+    // Bilinear interpolation
+    glm::vec3 p0 = p00 * (1.0f - wx) + p10 * wx;
+    glm::vec3 p1 = p01 * (1.0f - wx) + p11 * wx;
+    glm::vec3 result = p0 * (1.0f - wy) + p1 * wy;
+
+    return result;
 }
 
 // ===== DEVICE FUNCTIONS FOR ENVIRONMENT MAP =====
@@ -1151,6 +1260,8 @@ __global__ void shadeMaterialMIS(
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
     Material* materials,
+    GPUTexture* textures,    // ADD THIS
+    int num_textures,        // ADD THIS
     Geom* geoms,
     int num_geoms,
     LightInfo* lights,
@@ -1169,7 +1280,35 @@ __global__ void shadeMaterialMIS(
 
     if (intersection.t > 0.0f) {
         Material material = materials[intersection.materialId];
+
         glm::vec3 materialColor = material.color;
+
+        // Sample base color texture if available
+        if (material.baseColorTextureIdx >= 0 && material.baseColorTextureIdx < num_textures) {
+            materialColor = sampleTexture(textures[material.baseColorTextureIdx], intersection.uv);
+            // Multiply by base color factor
+            materialColor *= material.color;
+        }
+
+        // Sample metallic-roughness texture if available
+        if (material.metallicRoughnessTextureIdx >= 0 && material.metallicRoughnessTextureIdx < num_textures) {
+            glm::vec3 metallicRoughness = sampleTexture(
+                textures[material.metallicRoughnessTextureIdx], intersection.uv);
+            // In GLTF: Blue = metallic, Green = roughness
+            material.metallic *= metallicRoughness.z;
+            material.roughness *= metallicRoughness.y;
+        }
+
+        // Sample emissive texture if available
+        if (material.emissiveTextureIdx >= 0 && material.emissiveTextureIdx < num_textures) {
+            glm::vec3 emissive = sampleTexture(textures[material.emissiveTextureIdx], intersection.uv);
+            // If there's emissive texture, treat as light source
+            if (glm::length(emissive) > 0.0f) {
+                pathSegments[idx].color *= emissive * material.emissiveFactor;
+                pathSegments[idx].remainingBounces = 0;
+                return;
+            }
+        }
 
         // Handle light sources
         if (material.emittance > 0.0f) {
@@ -1192,7 +1331,6 @@ __global__ void shadeMaterialMIS(
         switch (mType) {
         case DIFFUSE:
             pathSegments[idx].prevIsSpecular = false;
-            // Use MIS for diffuse materials
             shadeDiffuseMIS(pathSegments[idx], intersection, materialColor,
                 geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
@@ -1437,6 +1575,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_intersections,
             dev_paths,
             dev_materials,
+            dev_textures,     
+            num_textures,     
             dev_geoms,
             hst_scene->geoms.size(),
             dev_lights,
