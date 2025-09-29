@@ -430,7 +430,32 @@ __global__ void computeIntersections(
     }
 }
 
-__device__ glm::vec3 sampleTexture(const GPUTexture& texture, glm::vec2 uv) {
+__device__ glm::vec3 getPixelFromTexture(const GPUTexture& texture, int x, int y) {
+    int idx = (y * texture.width + x) * texture.components;
+
+    if (texture.components == 3) {
+        return glm::vec3(
+            texture.data[idx] / 255.0f,
+            texture.data[idx + 1] / 255.0f,
+            texture.data[idx + 2] / 255.0f
+        );
+    }
+    else if (texture.components == 4) {
+        return glm::vec3(
+            texture.data[idx] / 255.0f,
+            texture.data[idx + 1] / 255.0f,
+            texture.data[idx + 2] / 255.0f
+            // Ignoring alpha for now
+        );
+    }
+    else if (texture.components == 1) {
+        float val = texture.data[idx] / 255.0f;
+        return glm::vec3(val, val, val);
+    }
+    return glm::vec3(1.0f, 0.0f, 1.0f); // Magenta for error detection
+}
+
+__device__ glm::vec3 sampleTextureClean(const GPUTexture& texture, glm::vec2 uv) {
     // Wrap UV coordinates
     uv.x = uv.x - floorf(uv.x);
     uv.y = uv.y - floorf(uv.y);
@@ -449,30 +474,10 @@ __device__ glm::vec3 sampleTexture(const GPUTexture& texture, glm::vec2 uv) {
     float wy = fy - y0;
 
     // Sample four neighboring pixels
-    auto getPixel = [&](int x, int y) -> glm::vec3 {
-        int idx = (y * texture.width + x) * texture.components;
-        if (texture.components == 3) {
-            return glm::vec3(
-                texture.data[idx] / 255.0f,
-                texture.data[idx + 1] / 255.0f,
-                texture.data[idx + 2] / 255.0f
-            );
-        }
-        else if (texture.components == 4) {
-            return glm::vec3(
-                texture.data[idx] / 255.0f,
-                texture.data[idx + 1] / 255.0f,
-                texture.data[idx + 2] / 255.0f
-                // Ignoring alpha for now
-            );
-        }
-        return glm::vec3(1.0f);
-        };
-
-    glm::vec3 p00 = getPixel(x0, y0);
-    glm::vec3 p10 = getPixel(x1, y0);
-    glm::vec3 p01 = getPixel(x0, y1);
-    glm::vec3 p11 = getPixel(x1, y1);
+    glm::vec3 p00 = getPixelFromTexture(texture, x0, y0);
+    glm::vec3 p10 = getPixelFromTexture(texture, x1, y0);
+    glm::vec3 p01 = getPixelFromTexture(texture, x0, y1);
+    glm::vec3 p11 = getPixelFromTexture(texture, x1, y1);
 
     // Bilinear interpolation
     glm::vec3 p0 = p00 * (1.0f - wx) + p10 * wx;
@@ -481,6 +486,8 @@ __device__ glm::vec3 sampleTexture(const GPUTexture& texture, glm::vec2 uv) {
 
     return result;
 }
+
+
 
 // ===== DEVICE FUNCTIONS FOR ENVIRONMENT MAP =====
 
@@ -799,6 +806,7 @@ __device__ void shadePBR(
     PathSegment& pathSegment,
     const ShadeableIntersection& intersection,
     const Material& material,
+    const glm::vec3& texturedColor,  // ADD THIS PARAMETER
     Geom* geoms,
     int num_geoms,
     Material* materials,
@@ -815,7 +823,7 @@ __device__ void shadePBR(
     glm::vec3 wo = -pathSegment.ray.direction; // Outgoing direction (toward camera)
 
     // Material properties
-    glm::vec3 albedo = material.color;
+    glm::vec3 albedo = texturedColor;
     float roughness = glm::clamp(material.roughness, 0.02f, 1.0f); // Clamp to avoid singularities
     float metallic = material.metallic;
     float transparency = material.transparency;
@@ -1283,16 +1291,27 @@ __global__ void shadeMaterialMIS(
 
         glm::vec3 materialColor = material.color;
 
+        // Debug: Check if we have valid UV coordinates
+        // Uncomment for debugging:
+         //if (true) {
+         //    printf("UV: %.3f, %.3f | Material: %d | Texture: %d\n", 
+         //        intersection.uv.x, intersection.uv.y, 
+         //        intersection.materialId, material.baseColorTextureIdx);
+         //}
+
         // Sample base color texture if available
         if (material.baseColorTextureIdx >= 0 && material.baseColorTextureIdx < num_textures) {
-            materialColor = sampleTexture(textures[material.baseColorTextureIdx], intersection.uv);
-            // Multiply by base color factor
-            materialColor *= material.color;
+            materialColor = sampleTextureClean(textures[material.baseColorTextureIdx], intersection.uv);
+            // Debug: Check sampled color
+             //if (true) {
+             //    printf("Sampled color: %.3f, %.3f, %.3f\n", 
+             //        materialColor.x, materialColor.y, materialColor.z);
+             //}
         }
 
         // Sample metallic-roughness texture if available
         if (material.metallicRoughnessTextureIdx >= 0 && material.metallicRoughnessTextureIdx < num_textures) {
-            glm::vec3 metallicRoughness = sampleTexture(
+            glm::vec3 metallicRoughness = sampleTextureClean(
                 textures[material.metallicRoughnessTextureIdx], intersection.uv);
             // In GLTF: Blue = metallic, Green = roughness
             material.metallic *= metallicRoughness.z;
@@ -1301,7 +1320,7 @@ __global__ void shadeMaterialMIS(
 
         // Sample emissive texture if available
         if (material.emissiveTextureIdx >= 0 && material.emissiveTextureIdx < num_textures) {
-            glm::vec3 emissive = sampleTexture(textures[material.emissiveTextureIdx], intersection.uv);
+            glm::vec3 emissive = sampleTextureClean(textures[material.emissiveTextureIdx], intersection.uv);
             // If there's emissive texture, treat as light source
             if (glm::length(emissive) > 0.0f) {
                 pathSegments[idx].color *= emissive * material.emissiveFactor;
@@ -1350,7 +1369,7 @@ __global__ void shadeMaterialMIS(
             // PBR materials can be both specular and diffuse depending on parameters
             // Consider it specular if it's smooth and metallic
             pathSegments[idx].prevIsSpecular = (material.roughness < 0.1f && material.metallic > 0.5f);
-            shadePBR(pathSegments[idx], intersection, material,
+            shadePBR(pathSegments[idx], intersection, material, materialColor,
                 geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
 
@@ -1426,9 +1445,8 @@ __global__ void shadeMaterialPBR(
             iter, idx, pathSegments[idx].remainingBounces);
 
         // Use unified PBR shading instead of material type switch
-        shadePBR(pathSegments[idx], intersection, material,
-            geoms, num_geoms, materials, lights, num_lights,
-            envMap, rng);
+        shadePBR(pathSegments[idx], intersection, material, materialColor,
+            geoms, num_geoms, materials, lights, num_lights, envMap, rng);
     }
     else {
         // Handle environment map or background
