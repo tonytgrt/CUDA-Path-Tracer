@@ -126,7 +126,7 @@ void initializeLights(Scene* scene) {
 
     for (int i = 0; i < scene->geoms.size(); i++) {
         int matId = scene->geoms[i].materialid;
-        if (matId < 0) continue;
+        //if (matId < 0) continue;
         if (scene->materials[matId].emittance > 0.0f) {
             LightInfo info;
             info.geomIdx = i;
@@ -251,9 +251,9 @@ void pathtraceInit(Scene* scene)
             cudaMalloc(&gpuTex.data, texSize);
             cudaMemcpy(gpuTex.data, cpuTex.data, texSize, cudaMemcpyHostToDevice);
 
-            printf("Uploaded texture %d: %dx%d, %d channels, %.2f MB\n",
-                i, cpuTex.width, cpuTex.height, cpuTex.components,
-                texSize / (1024.0f * 1024.0f));
+            //printf("Uploaded texture %d: %dx%d, %d channels, %.2f MB\n",
+            //    i, cpuTex.width, cpuTex.height, cpuTex.components,
+            //    texSize / (1024.0f * 1024.0f));
         }
 
         // Copy the array of texture descriptors to GPU
@@ -1399,75 +1399,6 @@ __global__ void shadeMaterialMIS(
     }
 }
 
-// ===== MODIFIED MAIN SHADING KERNEL =====
-__global__ void shadeMaterialPBR(
-    int iter,
-    int num_paths,
-    ShadeableIntersection* shadeableIntersections,
-    PathSegment* pathSegments,
-    Material* materials,
-    Geom* geoms,
-    int num_geoms,
-    LightInfo* lights,
-    int num_lights,
-    EnvironmentMap envMap,
-    bool firstIter,
-    bool useMIS
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_paths) return;
-
-    if (pathSegments[idx].remainingBounces <= 0) {
-        return;
-    }
-
-    ShadeableIntersection intersection = shadeableIntersections[idx];
-
-    if (intersection.t > 0.0f) {
-        Material material = materials[intersection.materialId];
-        glm::vec3 materialColor = material.color;
-
-        // Handle light sources
-        if (material.emittance > 0.0f) {
-            pathSegments[idx].color *= (materialColor * material.emittance);
-            pathSegments[idx].remainingBounces = 0;
-            return;
-        }
-
-        pathSegments[idx].remainingBounces--;
-
-        if (pathSegments[idx].remainingBounces <= 0) {
-            pathSegments[idx].color = glm::vec3(0.0f);
-            return;
-        }
-
-        thrust::default_random_engine rng = makeSeededRandomEngine(
-            iter, idx, pathSegments[idx].remainingBounces);
-
-        // Use unified PBR shading instead of material type switch
-        shadePBR(pathSegments[idx], intersection, material, materialColor,
-            geoms, num_geoms, materials, lights, num_lights, envMap, rng);
-    }
-    else {
-        // Handle environment map or background
-        if (envMap.enabled) {
-            glm::vec3 envColor = sampleEnvironmentMap(pathSegments[idx].ray.direction, envMap);
-            if (firstIter) {
-                pathSegments[idx].color *= envColor;
-            }
-            else if (pathSegments[idx].prevIsSpecular) {
-                pathSegments[idx].color *= envColor;
-            }
-            else {
-                pathSegments[idx].color *= envColor * 0.5f; // Reduced contribution for diffuse misses
-            }
-        }
-        else {
-            pathSegments[idx].color *= glm::vec3(0.0f);
-        }
-        pathSegments[idx].remainingBounces = 0;
-    }
-}
 
 // Add the current iteration's output to the overall image
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
