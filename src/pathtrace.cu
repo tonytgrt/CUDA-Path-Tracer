@@ -430,6 +430,33 @@ __global__ void computeIntersections(
     }
 }
 
+__device__ glm::vec4 getPixelFromTextureWithAlpha(const GPUTexture& texture, int x, int y) {
+    int idx = (y * texture.width + x) * texture.components;
+
+    if (texture.components == 3) {
+        return glm::vec4(
+            texture.data[idx] / 255.0f,
+            texture.data[idx + 1] / 255.0f,
+            texture.data[idx + 2] / 255.0f,
+            1.0f  // Opaque for RGB textures
+        );
+    }
+    else if (texture.components == 4) {
+        return glm::vec4(
+            texture.data[idx] / 255.0f,
+            texture.data[idx + 1] / 255.0f,
+            texture.data[idx + 2] / 255.0f,
+            texture.data[idx + 3] / 255.0f  // Include alpha channel
+        );
+    }
+    else if (texture.components == 1) {
+        float val = texture.data[idx] / 255.0f;
+        return glm::vec4(val, val, val, 1.0f);
+    }
+    return glm::vec4(1.0f, 0.0f, 1.0f, 1.0f); // Magenta for error detection
+}
+
+
 __device__ glm::vec3 getPixelFromTexture(const GPUTexture& texture, int x, int y) {
     int idx = (y * texture.width + x) * texture.components;
 
@@ -455,7 +482,7 @@ __device__ glm::vec3 getPixelFromTexture(const GPUTexture& texture, int x, int y
     return glm::vec3(1.0f, 0.0f, 1.0f); // Magenta for error detection
 }
 
-__device__ glm::vec3 sampleTextureClean(const GPUTexture& texture, glm::vec2 uv) {
+__device__ glm::vec4 sampleTextureWithAlpha(const GPUTexture& texture, glm::vec2 uv) {
     // Wrap UV coordinates
     uv.x = uv.x - floorf(uv.x);
     uv.y = uv.y - floorf(uv.y);
@@ -473,18 +500,23 @@ __device__ glm::vec3 sampleTextureClean(const GPUTexture& texture, glm::vec2 uv)
     float wx = fx - x0;
     float wy = fy - y0;
 
-    // Sample four neighboring pixels
-    glm::vec3 p00 = getPixelFromTexture(texture, x0, y0);
-    glm::vec3 p10 = getPixelFromTexture(texture, x1, y0);
-    glm::vec3 p01 = getPixelFromTexture(texture, x0, y1);
-    glm::vec3 p11 = getPixelFromTexture(texture, x1, y1);
+    // Sample four neighboring pixels with alpha
+    glm::vec4 p00 = getPixelFromTextureWithAlpha(texture, x0, y0);
+    glm::vec4 p10 = getPixelFromTextureWithAlpha(texture, x1, y0);
+    glm::vec4 p01 = getPixelFromTextureWithAlpha(texture, x0, y1);
+    glm::vec4 p11 = getPixelFromTextureWithAlpha(texture, x1, y1);
 
     // Bilinear interpolation
-    glm::vec3 p0 = p00 * (1.0f - wx) + p10 * wx;
-    glm::vec3 p1 = p01 * (1.0f - wx) + p11 * wx;
-    glm::vec3 result = p0 * (1.0f - wy) + p1 * wy;
+    glm::vec4 p0 = p00 * (1.0f - wx) + p10 * wx;
+    glm::vec4 p1 = p01 * (1.0f - wx) + p11 * wx;
+    glm::vec4 result = p0 * (1.0f - wy) + p1 * wy;
 
     return result;
+}
+
+__device__ glm::vec3 sampleTextureClean(const GPUTexture& texture, glm::vec2 uv) {
+    glm::vec4 color = sampleTextureWithAlpha(texture, uv);
+    return glm::vec3(color.x, color.y, color.z);
 }
 
 
@@ -806,7 +838,8 @@ __device__ void shadePBR(
     PathSegment& pathSegment,
     const ShadeableIntersection& intersection,
     const Material& material,
-    const glm::vec3& texturedColor,  // ADD THIS PARAMETER
+    const glm::vec3& texturedColor,
+    float textureAlpha,  // ADD THIS PARAMETER for texture alpha
     Geom* geoms,
     int num_geoms,
     Material* materials,
@@ -820,40 +853,67 @@ __device__ void shadePBR(
     glm::vec3 intersectionPoint = pathSegment.ray.origin +
         pathSegment.ray.direction * intersection.t;
     glm::vec3 normal = intersection.surfaceNormal;
-    glm::vec3 wo = -pathSegment.ray.direction; // Outgoing direction (toward camera)
+    glm::vec3 wo = -pathSegment.ray.direction;
 
     // Material properties
     glm::vec3 albedo = texturedColor;
-    float roughness = glm::clamp(material.roughness, 0.02f, 1.0f); // Clamp to avoid singularities
+    float roughness = glm::clamp(material.roughness, 0.02f, 1.0f);
     float metallic = material.metallic;
-    float transparency = material.transparency;
+
+    // Combine material transparency with texture alpha
+    // Use multiplicative blending for proper transparency stacking
+    float combinedTransparency = material.transparency;
+    if (textureAlpha < 1.0f) {
+        // Convert alpha to transparency and combine
+        float textureTransparency = 1.0f - textureAlpha;
+        combinedTransparency = 1.0f - ((1.0f - combinedTransparency) * (1.0f - textureTransparency));
+    }
 
     // Calculate F0 (reflectance at normal incidence)
-    glm::vec3 F0 = glm::vec3(0.04f); // Default for dielectric
-    F0 = glm::mix(F0, albedo, metallic); // For metals, F0 = albedo
+    glm::vec3 F0 = glm::vec3(0.04f);
+    F0 = glm::mix(F0, albedo, metallic);
 
-    // Handle transparency first
-    if (transparency > 0.0f && u01(rng) < transparency) {
-        // Transparent - shoot ray through
-        // Optional: add refraction based on IOR if desired
+    // Handle transparency/transmission
+    if (combinedTransparency > 0.0f && u01(rng) < combinedTransparency) {
+        // Ray passes through the surface
         float ior = material.indexOfRefraction > 0 ? material.indexOfRefraction : 1.5f;
 
-        // Simple transparency without refraction
-        if (roughness < 0.1f) {
-            // Clear transparency
-            pathSegment.ray.origin = intersectionPoint - normal * 0.001f;
-            pathSegment.ray.direction = pathSegment.ray.direction; // Continue straight
+        // Check if we need refraction
+        bool entering = glm::dot(normal, wo) > 0;
+        glm::vec3 n = entering ? normal : -normal;
+        float eta = entering ? (1.0f / ior) : ior;
+
+        // Fresnel for transmission
+        float cosTheta = glm::dot(n, wo);
+        float k = 1.0f - eta * eta * (1.0f - cosTheta * cosTheta);
+
+        glm::vec3 newDirection;
+        if (k < 0.0f || roughness > 0.8f) {
+            // Total internal reflection or very rough - just pass through
+            newDirection = pathSegment.ray.direction;
+            pathSegment.ray.origin = intersectionPoint - n * 0.001f;
         }
         else {
-            // Rough transparency - scatter the ray
-            glm::vec3 scatterDir = glm::normalize(pathSegment.ray.direction +
-                roughness * (2.0f * glm::vec3(u01(rng), u01(rng), u01(rng)) - glm::vec3(1.0f)));
-            pathSegment.ray.origin = intersectionPoint - normal * 0.001f;
-            pathSegment.ray.direction = scatterDir;
+            // Refract
+            newDirection = glm::normalize(
+                eta * (-wo) + (eta * cosTheta - sqrtf(k)) * n
+            );
+            pathSegment.ray.origin = intersectionPoint - n * 0.001f;
         }
 
-        // Tint by material color but reduce by transparency
-        pathSegment.color *= albedo;
+        // Add some roughness-based scattering for translucent materials
+        if (roughness > 0.1f && roughness < 0.8f) {
+            glm::vec3 scatter = glm::vec3(
+                u01(rng) - 0.5f,
+                u01(rng) - 0.5f,
+                u01(rng) - 0.5f
+            ) * roughness * 0.2f;
+            newDirection = glm::normalize(newDirection + scatter);
+        }
+
+        pathSegment.ray.direction = newDirection;
+        // Tint by material color with reduced influence for transparency
+        pathSegment.color *= glm::mix(glm::vec3(1.0f), albedo, 1.0f - combinedTransparency);
         return;
     }
 
@@ -1290,23 +1350,20 @@ __global__ void shadeMaterialMIS(
         Material material = materials[intersection.materialId];
 
         glm::vec3 materialColor = material.color;
+        float textureAlpha = 1.0f;  // Default to opaque
 
-        // Debug: Check if we have valid UV coordinates
-        // Uncomment for debugging:
-         //if (true) {
-         //    printf("UV: %.3f, %.3f | Material: %d | Texture: %d\n", 
-         //        intersection.uv.x, intersection.uv.y, 
-         //        intersection.materialId, material.baseColorTextureIdx);
-         //}
 
         // Sample base color texture if available
         if (material.baseColorTextureIdx >= 0 && material.baseColorTextureIdx < num_textures) {
-            materialColor = sampleTextureClean(textures[material.baseColorTextureIdx], intersection.uv);
-            // Debug: Check sampled color
-             //if (true) {
-             //    printf("Sampled color: %.3f, %.3f, %.3f\n", 
-             //        materialColor.x, materialColor.y, materialColor.z);
-             //}
+            glm::vec4 sampledColor = sampleTextureWithAlpha(
+                textures[material.baseColorTextureIdx],
+                intersection.uv
+            );
+            materialColor = glm::vec3(sampledColor.x, sampledColor.y, sampledColor.z);
+            textureAlpha = sampledColor.w;  // Extract alpha channel
+
+            // Apply material color as a tint (multiply)
+            materialColor *= material.color;
         }
 
         // Sample metallic-roughness texture if available
@@ -1370,6 +1427,7 @@ __global__ void shadeMaterialMIS(
             // Consider it specular if it's smooth and metallic
             pathSegments[idx].prevIsSpecular = (material.roughness < 0.1f && material.metallic > 0.5f);
             shadePBR(pathSegments[idx], intersection, material, materialColor,
+                textureAlpha,  // Pass texture alpha
                 geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
 
