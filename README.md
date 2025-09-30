@@ -11,6 +11,10 @@ CUDA Path Tracer
 
 ## WIP Renders
 
+### High Poly Chessboard
+This render has only 1771 iterations but took 9 hours.
+![](/img/wip-9.png)
+
 ### Stanford Dragon
 ![](/img/wip-8.png)
 
