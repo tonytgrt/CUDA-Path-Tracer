@@ -11,6 +11,9 @@ CUDA Path Tracer
 
 ## WIP Renders
 
+### Stanford Dragon
+![](/img/wip-8.png)
+
 ### GLTF Mesh Model with textures
 ![](/img/wip-7.png)
 

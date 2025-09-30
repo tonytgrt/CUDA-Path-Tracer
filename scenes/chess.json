@@ -43,10 +43,10 @@
         },
         {
             "TYPE": "gltf",
-            "FILE": "../gltf/DragonAttenuation.glb",
+            "FILE": "../gltf/chessboard.glb",
             "TRANS": [0.0, 0.0, 0.0],
-            "ROTAT": [90.0, 0.0, 0.0],
-            "SCALE": [1.0, 1.0, 1.0]
+            "ROTAT": [0.0, 0.0, 0.0],
+            "SCALE": [15.0, 15.0, 15.0]
         }
     ]
 }

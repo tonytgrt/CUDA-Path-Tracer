@@ -30,7 +30,7 @@
     },
     "EnvironmentMap":
     {
-        "FILE":"../envmaps/interior_atelier_soft_daylight.hdr",
+        "FILE":"../envmaps/Tropical_Beach_3k.hdr",
         "INTENSITY":1.0
     },
     "Objects": [
@@ -43,10 +43,10 @@
         },
         {
             "TYPE": "gltf",
-            "FILE": "../gltf/DragonAttenuation.glb",
+            "FILE": "../gltf/Duck.glb",
             "TRANS": [0.0, 0.0, 0.0],
-            "ROTAT": [90.0, 0.0, 0.0],
-            "SCALE": [1.0, 1.0, 1.0]
+            "ROTAT": [0.0, 0.0, 0.0],
+            "SCALE": [0.1, 0.1, 0.1]
         }
     ]
 }
