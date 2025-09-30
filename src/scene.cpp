@@ -4,6 +4,10 @@
 
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtx/string_cast.hpp>
+#include <glm/gtc/quaternion.hpp>        // For quaternion support
+#include <glm/gtx/quaternion.hpp>        // For glm::mat4_cast
+#include <glm/gtc/matrix_transform.hpp>
+
 #include "json.hpp"
 
 #include "tiny_gltf.h"
@@ -14,6 +18,7 @@
 #include <iostream>
 #include <string>
 #include <unordered_map>
+
 
 using namespace std;
 using json = nlohmann::json;
@@ -191,6 +196,7 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     const glm::vec3& translation,
     const glm::vec3& rotation,
     const glm::vec3& scale) {
+
     tinygltf::TinyGLTF loader;
     tinygltf::Model model;
     std::string err, warn;
@@ -257,6 +263,10 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     cout << "Material offset: " << materialOffset << endl;
     cout << "Total materials in scene: " << materials.size() << endl;
 
+    // Build the transformation matrix from the JSON parameters
+    glm::mat4 jsonTransform = utilityCore::buildTransformationMatrix(
+        translation, rotation, scale);
+
     // Create a new MeshData to store all triangles
     MeshData meshData;
     meshData.boundingBoxMin = glm::vec3(FLT_MAX);
@@ -273,6 +283,8 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
 
                 // Calculate node transform
                 glm::mat4 nodeTransform = parentTransform;
+
+                // Apply node's own transformation if it has one
                 if (node.matrix.size() == 16) {
                     glm::mat4 localTransform;
                     for (int i = 0; i < 4; ++i) {
@@ -280,6 +292,38 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                             localTransform[j][i] = static_cast<float>(node.matrix[i * 4 + j]);
                         }
                     }
+                    nodeTransform = parentTransform * localTransform;
+                }
+                // Or use TRS (Translation, Rotation, Scale) if present
+                else {
+                    glm::mat4 T = glm::mat4(1.0f);
+                    glm::mat4 R = glm::mat4(1.0f);
+                    glm::mat4 S = glm::mat4(1.0f);
+
+                    // Translation
+                    if (node.translation.size() == 3) {
+                        T = glm::translate(glm::mat4(1.0f),
+                            glm::vec3(node.translation[0], node.translation[1], node.translation[2]));
+                    }
+
+                    // Rotation (stored as quaternion)
+                    if (node.rotation.size() == 4) {
+                        glm::quat q(
+                            static_cast<float>(node.rotation[3]), // w
+                            static_cast<float>(node.rotation[0]), // x
+                            static_cast<float>(node.rotation[1]), // y
+                            static_cast<float>(node.rotation[2])  // z
+                        );
+                        R = glm::mat4_cast(q);
+                    }
+
+                    // Scale
+                    if (node.scale.size() == 3) {
+                        S = glm::scale(glm::mat4(1.0f),
+                            glm::vec3(node.scale[0], node.scale[1], node.scale[2]));
+                    }
+
+                    glm::mat4 localTransform = T * R * S;
                     nodeTransform = parentTransform * localTransform;
                 }
 
@@ -342,7 +386,7 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                 &texBuffer.data[texBufferView.byteOffset + texAccessor.byteOffset]);
                         }
 
-                        // Process triangles (keeping the same triangle processing code)
+                        // Process triangles
                         if (primitive.indices >= 0) {
                             // Indexed geometry
                             const tinygltf::Accessor& indexAccessor = model.accessors[primitive.indices];
@@ -352,7 +396,7 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                             for (size_t i = 0; i < indexAccessor.count; i += 3) {
                                 Triangle tri;
 
-                                // Get vertex indices based on component type
+                                // Get vertex indices
                                 unsigned int idx[3];
                                 if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
                                     const unsigned short* indices = reinterpret_cast<const unsigned short*>(
@@ -373,16 +417,81 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                     continue;
                                 }
 
-                                // Set vertex positions
-                                tri.v0 = glm::vec3(positions[idx[0] * 3], positions[idx[0] * 3 + 1], positions[idx[0] * 3 + 2]);
-                                tri.v1 = glm::vec3(positions[idx[1] * 3], positions[idx[1] * 3 + 1], positions[idx[1] * 3 + 2]);
-                                tri.v2 = glm::vec3(positions[idx[2] * 3], positions[idx[2] * 3 + 1], positions[idx[2] * 3 + 2]);
+                                // Get vertex positions in local space
+                                glm::vec3 localV0 = glm::vec3(positions[idx[0] * 3], positions[idx[0] * 3 + 1], positions[idx[0] * 3 + 2]);
+                                glm::vec3 localV1 = glm::vec3(positions[idx[1] * 3], positions[idx[1] * 3 + 1], positions[idx[1] * 3 + 2]);
+                                glm::vec3 localV2 = glm::vec3(positions[idx[2] * 3], positions[idx[2] * 3 + 1], positions[idx[2] * 3 + 2]);
 
-                                // Set normals
+                                // CRITICAL FIX: Transform vertices by the combined node transform
+                                tri.v0 = glm::vec3(nodeTransform * glm::vec4(localV0, 1.0f));
+                                tri.v1 = glm::vec3(nodeTransform * glm::vec4(localV1, 1.0f));
+                                tri.v2 = glm::vec3(nodeTransform * glm::vec4(localV2, 1.0f));
+
+                                // Transform normals (use inverse transpose for correct normal transformation)
                                 if (normals) {
-                                    tri.n0 = glm::vec3(normals[idx[0] * 3], normals[idx[0] * 3 + 1], normals[idx[0] * 3 + 2]);
-                                    tri.n1 = glm::vec3(normals[idx[1] * 3], normals[idx[1] * 3 + 1], normals[idx[1] * 3 + 2]);
-                                    tri.n2 = glm::vec3(normals[idx[2] * 3], normals[idx[2] * 3 + 1], normals[idx[2] * 3 + 2]);
+                                    glm::vec3 localN0 = glm::vec3(normals[idx[0] * 3], normals[idx[0] * 3 + 1], normals[idx[0] * 3 + 2]);
+                                    glm::vec3 localN1 = glm::vec3(normals[idx[1] * 3], normals[idx[1] * 3 + 1], normals[idx[1] * 3 + 2]);
+                                    glm::vec3 localN2 = glm::vec3(normals[idx[2] * 3], normals[idx[2] * 3 + 1], normals[idx[2] * 3 + 2]);
+
+                                    glm::mat3 normalMatrix = glm::mat3(glm::transpose(glm::inverse(nodeTransform)));
+                                    tri.n0 = glm::normalize(normalMatrix * localN0);
+                                    tri.n1 = glm::normalize(normalMatrix * localN1);
+                                    tri.n2 = glm::normalize(normalMatrix * localN2);
+                                }
+                                else {
+                                    // Calculate face normal from transformed vertices
+                                    glm::vec3 faceNormal = glm::normalize(glm::cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+                                    tri.n0 = tri.n1 = tri.n2 = faceNormal;
+                                }
+
+                                // Texture coordinates don't need transformation
+                                if (texcoords) {
+                                    tri.uv0 = glm::vec2(texcoords[idx[0] * 2], texcoords[idx[0] * 2 + 1]);
+                                    tri.uv1 = glm::vec2(texcoords[idx[1] * 2], texcoords[idx[1] * 2 + 1]);
+                                    tri.uv2 = glm::vec2(texcoords[idx[2] * 2], texcoords[idx[2] * 2 + 1]);
+                                }
+                                else {
+                                    tri.uv0 = tri.uv1 = tri.uv2 = glm::vec2(0.0f);
+                                }
+
+                                tri.materialId = sceneMaterialId;
+
+                                // Update bounding box with transformed vertices
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v0);
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v1);
+                                meshData.boundingBoxMin = glm::min(meshData.boundingBoxMin, tri.v2);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v0);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v1);
+                                meshData.boundingBoxMax = glm::max(meshData.boundingBoxMax, tri.v2);
+
+                                meshData.triangles.push_back(tri);
+                            }
+                        }
+                        else {
+                            // Non-indexed geometry - create triangles from vertex array
+                            for (size_t i = 0; i < posAccessor.count; i += 3) {
+                                Triangle tri;
+
+                                // Get vertex positions in local space
+                                glm::vec3 localV0 = glm::vec3(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+                                glm::vec3 localV1 = glm::vec3(positions[(i + 1) * 3], positions[(i + 1) * 3 + 1], positions[(i + 1) * 3 + 2]);
+                                glm::vec3 localV2 = glm::vec3(positions[(i + 2) * 3], positions[(i + 2) * 3 + 1], positions[(i + 2) * 3 + 2]);
+
+                                // Transform vertices by the combined node transform
+                                tri.v0 = glm::vec3(nodeTransform * glm::vec4(localV0, 1.0f));
+                                tri.v1 = glm::vec3(nodeTransform * glm::vec4(localV1, 1.0f));
+                                tri.v2 = glm::vec3(nodeTransform * glm::vec4(localV2, 1.0f));
+
+                                // Transform normals
+                                if (normals) {
+                                    glm::vec3 localN0 = glm::vec3(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]);
+                                    glm::vec3 localN1 = glm::vec3(normals[(i + 1) * 3], normals[(i + 1) * 3 + 1], normals[(i + 1) * 3 + 2]);
+                                    glm::vec3 localN2 = glm::vec3(normals[(i + 2) * 3], normals[(i + 2) * 3 + 1], normals[(i + 2) * 3 + 2]);
+
+                                    glm::mat3 normalMatrix = glm::mat3(glm::transpose(glm::inverse(nodeTransform)));
+                                    tri.n0 = glm::normalize(normalMatrix * localN0);
+                                    tri.n1 = glm::normalize(normalMatrix * localN1);
+                                    tri.n2 = glm::normalize(normalMatrix * localN2);
                                 }
                                 else {
                                     glm::vec3 faceNormal = glm::normalize(glm::cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
@@ -391,9 +500,9 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
 
                                 // Set texture coordinates
                                 if (texcoords) {
-                                    tri.uv0 = glm::vec2(texcoords[idx[0] * 2], texcoords[idx[0] * 2 + 1]);
-                                    tri.uv1 = glm::vec2(texcoords[idx[1] * 2], texcoords[idx[1] * 2 + 1]);
-                                    tri.uv2 = glm::vec2(texcoords[idx[2] * 2], texcoords[idx[2] * 2 + 1]);
+                                    tri.uv0 = glm::vec2(texcoords[i * 2], texcoords[i * 2 + 1]);
+                                    tri.uv1 = glm::vec2(texcoords[(i + 1) * 2], texcoords[(i + 1) * 2 + 1]);
+                                    tri.uv2 = glm::vec2(texcoords[(i + 2) * 2], texcoords[(i + 2) * 2 + 1]);
                                 }
                                 else {
                                     tri.uv0 = tri.uv1 = tri.uv2 = glm::vec2(0.0f);
@@ -412,17 +521,17 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                 meshData.triangles.push_back(tri);
                             }
                         }
-                        // Add similar code for non-indexed geometry...
                     }
                 }
 
-                // Process children
+                // Process children with accumulated transform
                 for (int childIdx : node.children) {
                     processNode(childIdx, nodeTransform);
                 }
                 };
 
-            processNode(nodeIdx, glm::mat4(1.0f));
+            // START with the JSON transformation as the root transform
+            processNode(nodeIdx, jsonTransform);
         }
     }
 
@@ -431,8 +540,7 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     newGeom.meshData = &meshes.back();
     newGeom.triangleCount = meshData.triangles.size();
 
-    cout << "\n=== GLTF Loading Complete ===" << endl;
-    cout << "Loaded " << newGeom.triangleCount << " triangles" << endl;
+    cout << "Loaded GLTF model with " << newGeom.triangleCount << " triangles" << endl;
     cout << "Bounding box: (" << meshData.boundingBoxMin.x << "," << meshData.boundingBoxMin.y << "," << meshData.boundingBoxMin.z << ") to ("
         << meshData.boundingBoxMax.x << "," << meshData.boundingBoxMax.y << "," << meshData.boundingBoxMax.z << ")" << endl;
 
@@ -645,6 +753,16 @@ void Scene::loadFromJSON(const std::string& jsonName)
         newGeom.triangleStart = -1;  // Initialize to invalid
         newGeom.triangleCount = 0;   // Initialize to 0
 
+        const auto& trans = p["TRANS"];
+        const auto& rotat = p["ROTAT"];
+        const auto& scale = p["SCALE"];
+        newGeom.translation = glm::vec3(trans[0], trans[1], trans[2]);
+        newGeom.rotation = glm::vec3(rotat[0], rotat[1], rotat[2]);
+        newGeom.scale = glm::vec3(scale[0], scale[1], scale[2]);
+        newGeom.transform = utilityCore::buildTransformationMatrix(
+            newGeom.translation, newGeom.rotation, newGeom.scale);
+        newGeom.inverseTransform = glm::inverse(newGeom.transform);
+        newGeom.invTranspose = glm::inverseTranspose(newGeom.transform);
 
         if (type == "cube")
         {
@@ -671,10 +789,6 @@ void Scene::loadFromJSON(const std::string& jsonName)
                     fullPath = sceneDir + gltfFile;
                 }
             }
-
-            const auto& trans = p["TRANS"];
-            const auto& rotat = p["ROTAT"];
-            const auto& scale = p["SCALE"];
             glm::vec3 translation = glm::vec3(trans[0], trans[1], trans[2]);
             glm::vec3 rotation = glm::vec3(rotat[0], rotat[1], rotat[2]);
             glm::vec3 scaleVec = glm::vec3(scale[0], scale[1], scale[2]);
@@ -682,17 +796,6 @@ void Scene::loadFromJSON(const std::string& jsonName)
             // Load GLTF - it will handle its own materials
             loadGLTFModel(fullPath, newGeom, translation, rotation, scaleVec);
         }
-        const auto& trans = p["TRANS"];
-        const auto& rotat = p["ROTAT"];
-        const auto& scale = p["SCALE"];
-        newGeom.translation = glm::vec3(trans[0], trans[1], trans[2]);
-        newGeom.rotation = glm::vec3(rotat[0], rotat[1], rotat[2]);
-        newGeom.scale = glm::vec3(scale[0], scale[1], scale[2]);
-        newGeom.transform = utilityCore::buildTransformationMatrix(
-            newGeom.translation, newGeom.rotation, newGeom.scale);
-        newGeom.inverseTransform = glm::inverse(newGeom.transform);
-        newGeom.invTranspose = glm::inverseTranspose(newGeom.transform);
-
         geoms.push_back(newGeom);
     }
     const auto& cameraData = data["Camera"];
