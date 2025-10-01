@@ -1877,9 +1877,15 @@ __global__ void reorderByMaterial(
     intersections_out[idx] = intersections_in[src_idx];
 }
 
+__device__ float computeLuminance(const glm::vec3& color) {
+    // Standard luminance formula (Rec. 709)
+    return 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
+}
+
 // ===== MAIN SHADING KERNEL =====
 __global__ void shadeMaterialMIS(
     int iter,
+    int currentBounce,
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
@@ -1901,6 +1907,27 @@ __global__ void shadeMaterialMIS(
     }
 
     ShadeableIntersection intersection = shadeableIntersections[idx];
+
+    thrust::default_random_engine rng = makeSeededRandomEngine(
+        iter, idx, pathSegments[idx].remainingBounces);
+
+    if (currentBounce >= RR_START_BOUNCE) {
+        PathSegment& path = pathSegments[idx];
+        float throughput = computeLuminance(path.color);
+        float survivalProb = glm::clamp(throughput, RR_SURVIVAL_MIN, RR_SURVIVAL_MAX);
+
+        thrust::uniform_real_distribution<float> u01(0, 1);
+        if (u01(rng) >= survivalProb) {
+            // Terminate path
+            path.remainingBounces = 0;
+            path.color = glm::vec3(0.0f);
+            return;
+        }
+        else {
+            // Path survives - compensate
+            path.color /= survivalProb;
+        }
+    }
 
     if (intersection.t > 0.0f) {
         Material material = materials[intersection.materialId];
@@ -1956,8 +1983,7 @@ __global__ void shadeMaterialMIS(
             return;
         }
 
-        thrust::default_random_engine rng = makeSeededRandomEngine(
-            iter, idx, pathSegments[idx].remainingBounces);
+        
 
         MaterialType mType = material.type;
         switch (mType) {
@@ -2187,6 +2213,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
         shadeMaterialMIS << <numblocksPathSegmentTracing, blockSize1d >> > (
             iter,
+            depth,
             num_paths,
             dev_intersections,
             dev_paths,
@@ -2201,20 +2228,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             firstIter
             );
 
-        //shadeMaterialPBR << <numblocksPathSegmentTracing, blockSize1d >> > (
-        //    iter,
-        //    num_paths,
-        //    dev_intersections,
-        //    dev_paths,
-        //    dev_materials,
-        //    dev_geoms,
-        //    hst_scene->geoms.size(),
-        //    dev_lights,
-        //    num_lights,
-        //    dev_environmentMap,
-        //    firstIter,
-        //    true  // Enable MIS for better quality
-        //    );
 
 		cudaDeviceSynchronize();
 

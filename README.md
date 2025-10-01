@@ -12,6 +12,8 @@ CUDA Path Tracer
 ## WIP Renders
 
 ### High Poly Chessboard
+![](/img/wip-11.png)
+
 A 1.49 million triangles gltf model. With BVH this renders with around 80ms frametime.
 ![](/img/wip-10.png)
 

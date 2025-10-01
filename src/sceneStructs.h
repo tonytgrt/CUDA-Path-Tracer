@@ -9,6 +9,10 @@
 
 #define BACKGROUND_COLOR (glm::vec3(0.0f))
 
+#define RR_START_BOUNCE 3        // Start Russian Roulette after this many bounces
+#define RR_SURVIVAL_MIN 0.05f    // Minimum survival probability (5%)
+#define RR_SURVIVAL_MAX 0.95f    // Maximum survival probability (95%)
+
 enum GeomType
 {
     SPHERE,
