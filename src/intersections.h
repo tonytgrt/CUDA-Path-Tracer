@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sceneStructs.h"
+#include "bvh.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtx/intersect.hpp>
@@ -83,6 +84,18 @@ __host__ __device__ float triangleIntersectionTest(
 __host__ __device__ float meshIntersectionTest(
     const Geom& mesh,
     const Triangle* triangles,
+    const Ray& r,
+    glm::vec3& intersectionPoint,
+    glm::vec3& normal,
+    bool& outside,
+    glm::vec2& uv,
+    int& materialId);
+
+__host__ __device__ float meshIntersectionTestBVH(
+    const Geom& mesh,
+    const Triangle* triangles,
+    const BVHNode* bvhNodes,
+    const int* bvhTriangleIndices,
     const Ray& r,
     glm::vec3& intersectionPoint,
     glm::vec3& normal,

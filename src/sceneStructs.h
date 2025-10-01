@@ -65,10 +65,11 @@ struct Geom
     glm::mat4 inverseTransform;
     glm::mat4 invTranspose;
 
-    // Add mesh data for GLTF objects
     MeshData* meshData;  // CPU Pointer to mesh data (nullptr for non-mesh objects)
     int triangleStart;   // Index into global triangle buffer
     int triangleCount;   // Number of triangles in this mesh
+
+    int bvhIndex;       // Index into BVH arrays (-1 if no BVH)
 };
 
 struct Material

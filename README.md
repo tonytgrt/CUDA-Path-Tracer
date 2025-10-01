@@ -12,7 +12,10 @@ CUDA Path Tracer
 ## WIP Renders
 
 ### High Poly Chessboard
-This render has only 1771 iterations but took 9 hours.
+A 1.49 million triangles gltf model. With BVH this renders with around 80ms frametime.
+![](/img/wip-10.png)
+
+Previosuly without BVH, it renders with 18000ms frametime. This render has only 1771 iterations but took 9 hours.
 ![](/img/wip-9.png)
 
 ### Stanford Dragon
