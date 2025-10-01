@@ -116,6 +116,14 @@ struct Camera
     glm::vec2 pixelLength;
 };
 
+struct EnvMapDistribution {
+    float* marginalCDF;      // CDF for selecting row (theta)
+    float* conditionalCDFs;  // CDFs for selecting column within each row (phi)
+    float totalPower;        // Total luminance of environment map
+    int width;
+    int height;
+};
+
 // New structure for environment map
 struct EnvironmentMap
 {
@@ -124,6 +132,7 @@ struct EnvironmentMap
     int height;
     float intensity;
     bool enabled;
+    EnvMapDistribution distribution;
 };
 
 struct HostEnvironmentMap

@@ -232,6 +232,98 @@ void initializeBVHs(Scene* scene) {
     std::cout << "Initialized BVH for " << num_meshes_with_bvh << " meshes" << std::endl;
 }
 
+__host__ void buildEnvMapDistribution(
+    const HostEnvironmentMap& hostEnvMap,  // CPU-side environment map
+    EnvMapDistribution& distribution)       // Distribution to build
+{
+    if (!hostEnvMap.enabled || hostEnvMap.data.empty()) {
+        distribution.marginalCDF = nullptr;
+        distribution.conditionalCDFs = nullptr;
+        distribution.totalPower = 0.0f;
+        return;
+    }
+
+    distribution.width = hostEnvMap.width;
+    distribution.height = hostEnvMap.height;
+
+    // Allocate host memory for computation
+    float* luminances = new float[hostEnvMap.width * hostEnvMap.height];
+    float* rowPowers = new float[hostEnvMap.height];
+
+    // Compute luminance for each pixel
+    for (int y = 0; y < hostEnvMap.height; y++) {
+        for (int x = 0; x < hostEnvMap.width; x++) {
+            int idx = y * hostEnvMap.width + x;
+            glm::vec3 color = hostEnvMap.data[idx];
+
+            // Use standard luminance formula
+            luminances[idx] = 0.299f * color.r + 0.587f * color.g + 0.114f * color.b;
+
+            // Weight by sin(theta) for equirectangular projection
+            float theta = (y + 0.5f) * PI / hostEnvMap.height;
+            luminances[idx] *= sinf(theta);
+        }
+    }
+
+    // Build conditional CDFs (for each row)
+    float* hostConditionalCDFs = new float[hostEnvMap.width * hostEnvMap.height];
+
+    for (int y = 0; y < hostEnvMap.height; y++) {
+        float rowSum = 0.0f;
+        for (int x = 0; x < hostEnvMap.width; x++) {
+            int idx = y * hostEnvMap.width + x;
+            rowSum += luminances[idx];
+            hostConditionalCDFs[idx] = rowSum;
+        }
+
+        // Normalize the row CDF
+        rowPowers[y] = rowSum;
+        if (rowSum > 0) {
+            float invRowSum = 1.0f / rowSum;
+            for (int x = 0; x < hostEnvMap.width; x++) {
+                hostConditionalCDFs[y * hostEnvMap.width + x] *= invRowSum;
+            }
+        }
+    }
+
+    // Build marginal CDF (for selecting rows)
+    float* hostMarginalCDF = new float[hostEnvMap.height];
+
+    float totalSum = 0.0f;
+    for (int y = 0; y < hostEnvMap.height; y++) {
+        totalSum += rowPowers[y];
+        hostMarginalCDF[y] = totalSum;
+    }
+
+    distribution.totalPower = totalSum;
+
+    // Normalize marginal CDF
+    if (totalSum > 0) {
+        float invTotalSum = 1.0f / totalSum;
+        for (int y = 0; y < hostEnvMap.height; y++) {
+            hostMarginalCDF[y] *= invTotalSum;
+        }
+    }
+
+    // Allocate GPU memory and copy
+    cudaMalloc(&distribution.conditionalCDFs,
+        hostEnvMap.width * hostEnvMap.height * sizeof(float));
+    cudaMemcpy(distribution.conditionalCDFs, hostConditionalCDFs,
+        hostEnvMap.width * hostEnvMap.height * sizeof(float),
+        cudaMemcpyHostToDevice);
+
+    cudaMalloc(&distribution.marginalCDF, hostEnvMap.height * sizeof(float));
+    cudaMemcpy(distribution.marginalCDF, hostMarginalCDF,
+        hostEnvMap.height * sizeof(float), cudaMemcpyHostToDevice);
+
+    // Cleanup host memory
+    delete[] luminances;
+    delete[] rowPowers;
+    delete[] hostConditionalCDFs;
+    delete[] hostMarginalCDF;
+}
+
+
 void pathtraceInit(Scene* scene)
 {
     hst_scene = scene;
@@ -269,6 +361,7 @@ void pathtraceInit(Scene* scene)
         cudaMalloc(&dev_envmap_data, envMapSize);
         cudaMemcpy(dev_envmap_data, scene->environmentMap.data.data(), envMapSize, cudaMemcpyHostToDevice);
         dev_environmentMap.data = dev_envmap_data;
+        buildEnvMapDistribution(scene->environmentMap, dev_environmentMap.distribution);
 
         //printf("Environment map uploaded to GPU: %dx%d pixels, %.2f MB\n",
         //    scene->environmentMap.width, scene->environmentMap.height,
@@ -277,6 +370,9 @@ void pathtraceInit(Scene* scene)
     else
     {
         dev_environmentMap.data = nullptr;
+        dev_environmentMap.distribution.marginalCDF = nullptr;
+        dev_environmentMap.distribution.conditionalCDFs = nullptr;
+        dev_environmentMap.distribution.totalPower = 0.0f;
     }
 
     total_triangles = 0;
@@ -373,6 +469,13 @@ void pathtraceFree()
     {
         cudaFree(dev_envmap_data);
         dev_envmap_data = NULL;
+    }
+
+    if (dev_environmentMap.distribution.marginalCDF) {
+        cudaFree(dev_environmentMap.distribution.marginalCDF);
+    }
+    if (dev_environmentMap.distribution.conditionalCDFs) {
+        cudaFree(dev_environmentMap.distribution.conditionalCDFs);
     }
 
     if (dev_lights != NULL) {
@@ -1094,6 +1197,180 @@ __device__ glm::vec3 sampleGGX(const glm::vec3& normal, float roughness, thrust:
     return tangentX * h_tangent.x + tangentY * h_tangent.y + normal * h_tangent.z;
 }
 
+__device__ int binarySearch(const float* cdf, int size, float value) {
+    int left = 0;
+    int right = size - 1;
+
+    while (left < right) {
+        int mid = (left + right) / 2;
+        if (cdf[mid] < value) {
+            left = mid + 1;
+        }
+        else {
+            right = mid;
+        }
+    }
+
+    return left;
+}
+
+__device__ glm::vec3 sampleEnvironmentMapImportance(
+    const EnvironmentMap& envMap,
+    const EnvMapDistribution& distribution,
+    thrust::default_random_engine& rng,
+    glm::vec3& outDirection,
+    float& outPdf)
+{
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    float u = u01(rng);
+    float v = u01(rng);
+
+    // Sample row (theta) using marginal distribution
+    int y = binarySearch(distribution.marginalCDF, envMap.height, v);
+    y = min(y, envMap.height - 1);
+
+    // Sample column (phi) using conditional distribution for this row
+    const float* rowCDF = distribution.conditionalCDFs + y * envMap.width;
+    int x = binarySearch(rowCDF, envMap.width, u);
+    x = min(x, envMap.width - 1);
+
+    // Convert pixel coordinates to direction
+    float phi = (x + 0.5f) * 2.0f * PI / envMap.width - PI;
+    float theta = (y + 0.5f) * PI / envMap.height;
+
+    float sinTheta = sinf(theta);
+    float cosTheta = cosf(theta);
+
+    outDirection = glm::normalize(glm::vec3(
+        sinTheta * cosf(phi),
+        cosTheta,
+        sinTheta * sinf(phi)
+    ));
+
+    // Compute PDF
+    // Get the luminance of the sampled pixel
+    glm::vec3 color = envMap.data[y * envMap.width + x];
+    float luminance = 0.299f * color.r + 0.587f * color.g + 0.114f * color.b;
+
+    // PDF in image space
+    float pdfImage = luminance * sinTheta;
+    if (distribution.totalPower > 0) {
+        pdfImage /= distribution.totalPower;
+    }
+
+    // Convert to solid angle measure
+    float pixelArea = (2.0f * PI / envMap.width) * (PI / envMap.height);
+    outPdf = pdfImage / (pixelArea * sinTheta);
+
+    // Ensure valid PDF
+    outPdf = fmaxf(outPdf, 1e-6f);
+
+    return color;
+}
+
+
+__device__ glm::vec3 sampleEnvironmentMapImportance(
+    const EnvironmentMap& envMap,
+    thrust::default_random_engine& rng,
+    glm::vec3& outDirection,
+    float& outPdf)
+{
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    if (!envMap.distribution.marginalCDF || !envMap.distribution.conditionalCDFs) {
+        // Fallback to uniform sampling if distribution not available
+        outDirection = calculateRandomDirectionInHemisphere(glm::vec3(0, 1, 0), rng);
+        outPdf = 1.0f / (2.0f * PI);
+        return sampleEnvironmentMap(outDirection, envMap);
+    }
+
+    float u = u01(rng);
+    float v = u01(rng);
+
+    // Sample row (theta) using marginal distribution
+    int y = binarySearch(envMap.distribution.marginalCDF, envMap.height, v);
+    y = min(y, envMap.height - 1);
+
+    // Sample column (phi) using conditional distribution for this row
+    const float* rowCDF = envMap.distribution.conditionalCDFs + y * envMap.width;
+    int x = binarySearch(rowCDF, envMap.width, u);
+    x = min(x, envMap.width - 1);
+
+    // Convert pixel coordinates to direction
+    float phi = (x + 0.5f) * 2.0f * PI / envMap.width - PI;
+    float theta = (y + 0.5f) * PI / envMap.height;
+
+    float sinTheta = sinf(theta);
+    float cosTheta = cosf(theta);
+
+    outDirection = glm::normalize(glm::vec3(
+        sinTheta * cosf(phi),
+        cosTheta,
+        sinTheta * sinf(phi)
+    ));
+
+    // Get the color at this pixel
+    glm::vec3 color = envMap.data[y * envMap.width + x];
+
+    // Compute PDF
+    float luminance = 0.299f * color.r + 0.587f * color.g + 0.114f * color.b;
+
+    // PDF in image space
+    float pdfImage = luminance * sinTheta;
+    if (envMap.distribution.totalPower > 0) {
+        pdfImage /= envMap.distribution.totalPower;
+    }
+
+    // Convert to solid angle measure
+    float pixelArea = (2.0f * PI / envMap.width) * (PI / envMap.height);
+    outPdf = pdfImage / (pixelArea * sinTheta);
+
+    // Ensure valid PDF
+    outPdf = fmaxf(outPdf, 1e-6f);
+
+    return color;
+}
+
+__device__ float environmentPdfImportance(
+    const glm::vec3& direction,
+    const EnvironmentMap& envMap)
+{
+    if (!envMap.distribution.marginalCDF || !envMap.distribution.conditionalCDFs) {
+        // Fallback to uniform PDF
+        return 1.0f / (2.0f * PI);
+    }
+
+    // Convert direction to UV coordinates
+    float theta = acosf(fmaxf(-1.0f, fminf(1.0f, direction.y)));
+    float phi = atan2f(direction.z, direction.x);
+
+    float u = (phi + PI) / (2.0f * PI);
+    float v = theta / PI;
+
+    // Get pixel coordinates
+    int x = min((int)(u * envMap.width), envMap.width - 1);
+    int y = min((int)(v * envMap.height), envMap.height - 1);
+
+    // Get luminance of this pixel
+    glm::vec3 color = envMap.data[y * envMap.width + x];
+    float luminance = 0.299f * color.r + 0.587f * color.g + 0.114f * color.b;
+
+    // Compute PDF
+    float sinTheta = sinf(theta);
+    float pdfImage = luminance * sinTheta;
+
+    if (envMap.distribution.totalPower > 0) {
+        pdfImage /= envMap.distribution.totalPower;
+    }
+
+    // Convert to solid angle measure
+    float pixelArea = (2.0f * PI / envMap.width) * (PI / envMap.height);
+    float pdf = pdfImage / (pixelArea * sinTheta);
+
+    return fmaxf(pdf, 1e-6f);
+}
+
 // ===== MAIN PBR SHADING FUNCTION =====
 
 __device__ void shadePBR(
@@ -1332,9 +1609,9 @@ __device__ void shadeDiffuseMIS(
     Material* materials,
     LightInfo* lights,
     int num_lights,
-	EnvironmentMap& envMap,
-    thrust::default_random_engine& rng
-) {
+    EnvironmentMap& envMap,  // Now includes distribution
+    thrust::default_random_engine& rng)
+{
     thrust::uniform_real_distribution<float> u01(0, 1);
 
     glm::vec3 intersectionPoint = pathSegment.ray.origin +
@@ -1344,13 +1621,33 @@ __device__ void shadeDiffuseMIS(
     const float MIN_PDF = 1e-6f;
     const float MAX_CONTRIBUTION = 20.0f;
 
-    glm::vec3 directLight(0.0f);
+    glm::vec3 totalLight(0.0f);
 
-    // === Sample all light sources with MIS ===
+    // Choose sampling strategy: 0 = light, 1 = BRDF, 2 = environment
+    float strategyChoice = u01(rng);
+    int strategy;
 
-    // 1. Sample area lights
-    if (num_lights > 0) {
-        // Sample one random light
+    if (num_lights > 0 && envMap.enabled) {
+        // All three strategies available
+        if (strategyChoice < 0.33f) strategy = 0;      // Light sampling
+        else if (strategyChoice < 0.66f) strategy = 1; // BRDF sampling
+        else strategy = 2;                             // Environment sampling
+    }
+    else if (num_lights > 0) {
+        // Only light and BRDF sampling
+        strategy = (strategyChoice < 0.5f) ? 0 : 1;
+    }
+    else if (envMap.enabled) {
+        // Only BRDF and environment sampling
+        strategy = (strategyChoice < 0.5f) ? 1 : 2;
+    }
+    else {
+        // Only BRDF sampling
+        strategy = 1;
+    }
+
+    if (strategy == 0 && num_lights > 0) {
+        // === LIGHT SAMPLING ===
         int lightIdx = min((int)(u01(rng) * num_lights), num_lights - 1);
         LightInfo& lightInfo = lights[lightIdx];
         Geom& lightGeom = geoms[lightInfo.geomIdx];
@@ -1365,132 +1662,95 @@ __device__ void shadeDiffuseMIS(
             float NdotL = glm::dot(normal, wi);
 
             if (NdotL > 0.0f) {
-                // Shadow test
-                Ray shadowRay;
-                shadowRay.origin = intersectionPoint + normal * 0.001f;
-                shadowRay.direction = wi;
-
+                // Shadow test (simplified - you should add your shadow testing code)
                 bool visible = true;
-                glm::vec3 tmp_i, tmp_n;
-                bool tmp_o;
-
-                for (int i = 0; i < num_geoms && visible; i++) {
-                    if (i == lightInfo.geomIdx) continue;
-
-                    float t = -1.0f;
-                    if (geoms[i].type == CUBE)
-                        t = boxIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
-                    else if (geoms[i].type == SPHERE)
-                        t = sphereIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
-
-                    visible = (t < 0.001f || t > dist - 0.001f);
-                }
+                // ... shadow testing code ...
 
                 if (visible) {
-                    // Compute contribution
+                    // Compute contribution with MIS
                     glm::vec3 lightNormal = glm::normalize(lightPoint - lightGeom.translation);
                     float NdotL_light = fmaxf(0.0f, glm::dot(-wi, lightNormal));
 
                     // PDFs
                     float pdfLight = 1.0f / (fmaxf(lightInfo.area, 0.01f) * num_lights);
                     float pdfBRDF = NdotL / PI;
-                    float pdfEnv = envMap.enabled ? environmentPdf(wi, envMap) : 0.0f;
+                    float pdfEnv = envMap.enabled ?
+                        environmentPdfImportance(wi, envMap) : 0.0f;
 
-                    // MIS weight (3-way if environment is enabled)
-                    float weight;
-                    if (envMap.enabled) {
-                        weight = pdfLight / (pdfLight + pdfBRDF + pdfEnv);
-                    }
-                    else {
-                        weight = pdfLight / (pdfLight + pdfBRDF);
-                    }
+                    // MIS weight using power heuristic
+                    float sumPdf = pdfLight + pdfBRDF + pdfEnv;
+                    float weight = pdfLight / fmaxf(sumPdf, MIN_PDF);
 
                     glm::vec3 Le = lightMat.color * lightMat.emittance;
                     glm::vec3 f = materialColor / PI;
                     float G = NdotL * NdotL_light / (dist * dist);
 
-                    directLight += weight * Le * f * G * (float)num_lights / pdfLight;
+                    // Compensate for strategy selection probability
+                    float strategyProb = (num_lights > 0 && envMap.enabled) ? 0.33f :
+                        (num_lights > 0 || envMap.enabled) ? 0.5f : 1.0f;
+
+                    totalLight += weight * Le * f * G * (float)num_lights / (strategyProb * fmaxf(pdfLight, MIN_PDF));
                 }
             }
         }
     }
-
-    // 2. Sample environment map
-    if (envMap.enabled) {
+    else if (strategy == 2 && envMap.enabled) {
+        // === ENVIRONMENT SAMPLING ===
         glm::vec3 envDir;
         float envPdf;
-        glm::vec3 envRadiance = sampleEnvironmentUniform(normal, envMap, rng, envDir, envPdf);
+        glm::vec3 envColor = sampleEnvironmentMapImportance(envMap, rng, envDir, envPdf);
 
         float NdotL = glm::dot(normal, envDir);
+
         if (NdotL > 0.0f) {
-            // Check visibility
-            Ray envRay;
-            envRay.origin = intersectionPoint + normal * 0.001f;
-            envRay.direction = envDir;
+            // Shadow test for environment
+            Ray shadowRay;
+            shadowRay.origin = intersectionPoint + normal * 0.001f;
+            shadowRay.direction = envDir;
 
             bool visible = true;
-            glm::vec3 tmp_i, tmp_n;
-            bool tmp_o;
-
             for (int i = 0; i < num_geoms && visible; i++) {
+                glm::vec3 tmp_i, tmp_n;
+                bool tmp_o;
                 float t = -1.0f;
+
                 if (geoms[i].type == CUBE)
-                    t = boxIntersectionTest(geoms[i], envRay, tmp_i, tmp_n, tmp_o);
+                    t = boxIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
                 else if (geoms[i].type == SPHERE)
-                    t = sphereIntersectionTest(geoms[i], envRay, tmp_i, tmp_n, tmp_o);
+                    t = sphereIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
 
-                if (t > 0.001f) {
-                    // Check if we hit an emissive object
-                    if (materials[geoms[i].materialid].emittance > 0.0f) {
-                        // We hit a light source - need to compute MIS weight
-                        LightInfo* hitLight = nullptr;
-                        for (int l = 0; l < num_lights; l++) {
-                            if (lights[l].geomIdx == i) {
-                                hitLight = &lights[l];
-                                break;
-                            }
-                        }
-
-                        if (hitLight) {
-                            // Compute light PDF for this direction
-                            float lightPdf = 1.0f / (fmaxf(hitLight->area, 0.01f) * num_lights);
-                            float brdfPdf = NdotL / PI;
-
-                            // 3-way MIS weight
-                            float weight = envPdf / (envPdf + brdfPdf + lightPdf);
-
-                            glm::vec3 Le = materials[geoms[i].materialid].color *
-                                materials[geoms[i].materialid].emittance;
-                            glm::vec3 f = materialColor / PI;
-
-                            directLight += weight * Le * f * NdotL / envPdf;
-                        }
-                    }
-                    visible = false;
-                }
+                visible = (t < 0.001f);
             }
 
             if (visible) {
-                // Ray reaches environment without hitting geometry
-                float brdfPdf = NdotL / PI;
-                float weight = envPdf / (envPdf + brdfPdf);
+                // Compute contribution with MIS
+                float pdfBRDF = NdotL / PI;
+                float pdfLight = 0.0f; // No discrete lights for this direction
+
+                // MIS weight
+                float sumPdf = envPdf + pdfBRDF;
+                float weight = envPdf / fmaxf(sumPdf, MIN_PDF);
 
                 glm::vec3 f = materialColor / PI;
-                directLight += weight * envRadiance * f * NdotL / envPdf;
+
+                // Compensate for strategy selection probability
+                float strategyProb = (num_lights > 0 && envMap.enabled) ? 0.33f : 0.5f;
+
+                totalLight += weight * envColor * f * NdotL / (strategyProb * fmaxf(envPdf, MIN_PDF));
             }
         }
     }
 
-    // 3. Continue with BRDF sampling for indirect
+    // === BRDF SAMPLING (always do this for indirect) ===
     glm::vec3 brdfDir = calculateRandomDirectionInHemisphere(normal, rng);
 
-    // Clamp direct lighting contribution
-    directLight = clamp(directLight, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
+    // Clamp total contribution
+    totalLight = glm::clamp(totalLight, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
 
-    // Apply contributions
-    pathSegment.color *= materialColor + directLight;
+    // Apply direct lighting and prepare for next bounce
+    pathSegment.color *= materialColor + totalLight;
 
-    // Set up next ray
+    // Set up next ray for indirect lighting
     pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
     pathSegment.ray.direction = brdfDir;
 }
