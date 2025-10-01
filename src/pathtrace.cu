@@ -367,10 +367,40 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         segment.ray.origin = cam.position;
         segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
 
-        // TODO: implement antialiasing by jittering the ray
+        // === STOCHASTIC SAMPLED ANTIALIASING ===
+
+        // Define the subdivision level (e.g., 2x2, 3x3, or 4x4 grid per pixel)
+        // Higher values give better antialiasing but require more samples for convergence
+        const int GRID_SIZE = 2; // Can be 2, 3, or 4 for 4, 9, or 16 samples per pixel
+        const int CELLS_PER_PIXEL = GRID_SIZE * GRID_SIZE;
+
+        // Create a random number generator for this pixel
+        thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, 0);
+        thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+
+        // Determine which cell to sample for this iteration
+        // This ensures we cycle through all cells over multiple iterations
+        int cellIndex = iter % CELLS_PER_PIXEL;
+        int cellX = cellIndex % GRID_SIZE;
+        int cellY = cellIndex / GRID_SIZE;
+
+        // Calculate the jittered offset within the pixel
+        // Each cell has size (1.0 / GRID_SIZE) in pixel coordinates
+        float cellSize = 1.0f / (float)GRID_SIZE;
+
+        // Random offset within the selected cell
+        float jitterX = (cellX + u01(rng)) * cellSize;
+        float jitterY = (cellY + u01(rng)) * cellSize;
+
+        // Convert pixel coordinates to continuous coordinates with jitter
+        // Subtract 0.5 to center the jitter pattern around pixel center
+        float pixelX = (float)x + jitterX - 0.5f;
+        float pixelY = (float)y + jitterY - 0.5f;
+
+        // Generate ray direction through the jittered pixel position
         segment.ray.direction = glm::normalize(cam.view
-            - cam.right * cam.pixelLength.x * ((float)x - (float)cam.resolution.x * 0.5f)
-            - cam.up * cam.pixelLength.y * ((float)y - (float)cam.resolution.y * 0.5f)
+            - cam.right * cam.pixelLength.x * (pixelX - (float)cam.resolution.x * 0.5f)
+            - cam.up * cam.pixelLength.y * (pixelY - (float)cam.resolution.y * 0.5f)
         );
 
         segment.pixelIndex = index;
