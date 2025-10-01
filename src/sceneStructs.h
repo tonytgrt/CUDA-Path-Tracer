@@ -48,7 +48,6 @@ struct MeshData
     glm::vec3 boundingBoxMax;
 };
 
-
 struct Ray
 {
     glm::vec3 origin;
