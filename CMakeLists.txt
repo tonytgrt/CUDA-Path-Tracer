@@ -21,6 +21,74 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     SET_PROPERTY(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
+# ========================================
+# OptiX Configuration
+# ========================================
+
+# IMPORTANT: First, we need to set the OptiX location before including FindOptiX
+# The OptiX SDK you downloaded should have an 'include' folder at its root
+# If the structure is different, you may need to adjust this path
+set(OptiX_ROOT_DIR "${CMAKE_SOURCE_DIR}/external/OptiX SDK 9.0.0")
+
+# Check if the include directory exists in the expected location
+if(EXISTS "${OptiX_ROOT_DIR}/include")
+    set(OptiX_INCLUDE_DIR "${OptiX_ROOT_DIR}/include")
+elseif(EXISTS "${OptiX_ROOT_DIR}/SDK/include")
+    set(OptiX_INCLUDE_DIR "${OptiX_ROOT_DIR}/SDK/include")
+elseif(EXISTS "${OptiX_ROOT_DIR}/optix/include")
+    set(OptiX_INCLUDE_DIR "${OptiX_ROOT_DIR}/optix/include")
+else()
+    # If not found, let's look for optix.h recursively
+    file(GLOB_RECURSE OPTIX_H_PATH "${OptiX_ROOT_DIR}/**/optix.h")
+    if(OPTIX_H_PATH)
+        get_filename_component(OptiX_INCLUDE_DIR "${OPTIX_H_PATH}" DIRECTORY)
+        message(STATUS "Found optix.h at: ${OPTIX_H_PATH}")
+    else()
+        message(FATAL_ERROR "Could not find optix.h in ${OptiX_ROOT_DIR}. Please check your OptiX SDK installation.")
+    endif()
+endif()
+
+# Set the variables that FindOptiX.cmake expects
+set(OptiX_INSTALL_DIR "${OptiX_ROOT_DIR}" CACHE PATH "Path to OptiX installed location." FORCE)
+set(OPTIX_ROOT_DIR "${OptiX_ROOT_DIR}" CACHE PATH "Path to OptiX installed location." FORCE)
+
+# Add OptiX SDK CMake modules to the module path
+if(EXISTS "${OptiX_ROOT_DIR}/SDK/CMake")
+    set(CMAKE_MODULE_PATH 
+        "${OptiX_ROOT_DIR}/SDK/CMake"
+        ${CMAKE_MODULE_PATH}
+    )
+endif()
+
+# Now try to find OptiX
+# If FindOptiX.cmake exists in the SDK, use it; otherwise, we'll set the variables manually
+if(EXISTS "${OptiX_ROOT_DIR}/SDK/CMake/FindOptiX.cmake")
+    # Set hints for FindOptiX
+    set(OptiX_LOCATION "${OptiX_ROOT_DIR}")
+    set(OPTIX_LOCATION "${OptiX_ROOT_DIR}")
+    
+    find_package(OptiX REQUIRED)
+else()
+    # Manually set OptiX variables if FindOptiX.cmake doesn't exist or doesn't work
+    message(STATUS "Manually configuring OptiX paths")
+    set(OptiX_FOUND TRUE)
+    set(OptiX_INCLUDE "${OptiX_INCLUDE_DIR}")
+    set(OPTIX_INCLUDE_DIR "${OptiX_INCLUDE_DIR}")
+endif()
+
+# Verify that we can find optix.h
+if(NOT EXISTS "${OptiX_INCLUDE_DIR}/optix.h")
+    message(FATAL_ERROR "optix.h not found in ${OptiX_INCLUDE_DIR}. Please verify your OptiX SDK installation.")
+else()
+    message(STATUS "Found OptiX headers at: ${OptiX_INCLUDE_DIR}")
+endif()
+
+# Find CUDA (required for OptiX)
+find_package(CUDA REQUIRED)
+
+# ========================================
+# OpenGL and Window Management
+# ========================================
 find_package(OpenGL REQUIRED)
 
 if(UNIX)
@@ -44,10 +112,25 @@ else(UNIX)
     set(GL_LIBRARIES ${GLEW_LIBRARY} ${GLFW_LIBRARY} ${OPENGL_LIBRARY})
 endif(UNIX)
 
+# ========================================
+# GLM
+# ========================================
 set(GLM_ROOT_DIR "${CMAKE_SOURCE_DIR}/external")
 find_package(GLM REQUIRED)
-include_directories(${GLM_INCLUDE_DIRS})
 
+# ========================================
+# Include Directories
+# ========================================
+include_directories(
+    ${GLM_INCLUDE_DIRS}
+    ${OptiX_INCLUDE_DIR}        # OptiX headers
+    ${CUDA_INCLUDE_DIRS}        # CUDA headers
+    ${CMAKE_SOURCE_DIR}/src     # Your source directory
+)
+
+# ========================================
+# Source Files
+# ========================================
 set(headers
     src/image.h
     src/interactions.h
@@ -58,6 +141,7 @@ set(headers
     src/sceneStructs.h
     src/utilities.h
     src/bvh.h
+    src/optixDenoiser.h   
 )
 
 set(sources
@@ -71,6 +155,7 @@ set(sources
     src/scene.cpp
     src/utilities.cpp
     src/bvh.cpp
+    src/optixDenoiser.cpp 
 )
 
 set(imgui_headers
@@ -105,19 +190,88 @@ source_group("Sources" FILES ${sources})
 source_group("ImGui\\Headers" FILES ${imgui_headers})
 source_group("ImGui\\Sources" FILES ${imgui_sources})
 
-#add_subdirectory(src/ImGui)
-#add_subdirectory(stream_compaction)  # TODO: uncomment if using your stream compaction
+# ========================================
+# Executable
+# ========================================
+add_executable(${CMAKE_PROJECT_NAME} 
+    ${sources} 
+    ${headers} 
+    ${imgui_sources} 
+    ${imgui_headers}
+)
 
-add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers} ${imgui_sources} ${imgui_headers})
+# ========================================
+# Link Libraries
+# ========================================
+# OptiX 9.0 is primarily header-only, but we still link against CUDA
 target_link_libraries(${CMAKE_PROJECT_NAME}
     ${GL_LIBRARIES}
-    #stream_compaction  # TODO: uncomment if using your stream compaction
+    ${CUDA_LIBRARIES}
+    ${CUDA_cudart_LIBRARY}
+    cuda  # CUDA driver API (required for OptiX)
 )
-set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_ARCHITECTURES native)
 
-target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G;-src-in-ptx>")
-target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-lineinfo;-src-in-ptx>")
+# On Windows, we might need additional libraries
+if(WIN32)
+    target_link_libraries(${CMAKE_PROJECT_NAME}
+        # Add Windows-specific libraries if needed
+        ws2_32  # Windows sockets (sometimes needed)
+    )
+endif()
 
+# ========================================
+# CUDA Properties
+# ========================================
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES 
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES native
+)
+
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE 
+    "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G;-src-in-ptx>"
+)
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE 
+    "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-lineinfo;-src-in-ptx>"
+)
+
+# ========================================
+# Compile Definitions
+# ========================================
+# Add OptiX version definition if needed
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+    OPTIX_VERSION=90000  # OptiX 9.0.0
+)
+
+# ========================================
+# Set VS Startup Project
+# ========================================
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})
 
+# ========================================
+# Print Configuration Info
+# ========================================
+message(STATUS "")
+message(STATUS "========================================")
+message(STATUS "OptiX Configuration:")
+message(STATUS "  OptiX Root: ${OptiX_ROOT_DIR}")
+message(STATUS "  OptiX Include: ${OptiX_INCLUDE_DIR}")
+message(STATUS "  CUDA Version: ${CUDA_VERSION}")
+message(STATUS "  CUDA Toolkit Root: ${CUDA_TOOLKIT_ROOT_DIR}")
+message(STATUS "")
+message(STATUS "Project Configuration:")
+message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "  CUDA Standard: ${CMAKE_CUDA_STANDARD}")
+message(STATUS "========================================")
+message(STATUS "")
+
+# ========================================
+# Post-build Commands (Optional)
+# ========================================
+# If you have any OptiX samples or data files you want to copy, add them here
+# For example, if you want to copy OptiX sample kernels for reference:
+# add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+#     COMMAND ${CMAKE_COMMAND} -E copy_directory
+#     "${OptiX_ROOT_DIR}/SDK/cuda"
+#     "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/optix_kernels"
+# )
