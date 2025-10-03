@@ -4,6 +4,7 @@
 #include "scene.h"
 #include "sceneStructs.h"
 #include "utilities.h"
+#include "optixDenoiser.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtx/transform.hpp>
@@ -76,6 +77,16 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods
 void mousePositionCallback(GLFWwindow* window, double xpos, double ypos);
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 void scrollCallback(GLFWwindow* window, double xoffset, double yoffset);
+
+class OptiXDenoiser;
+
+extern bool USE_DENOISER;
+extern bool DENOISE_WITH_NORMALS;
+extern bool DENOISE_WITH_ALBEDO;
+extern int DENOISE_START_ITER;
+extern int DENOISE_FREQUENCY;
+extern OptiXDenoiser* g_denoiser;
+
 
 std::string currentTimeString()
 {
@@ -533,6 +544,123 @@ void RenderImGui()
         ImGui::BulletText("[Scroll] Zoom In/Out");
         ImGui::BulletText("[RMB Drag] Alternative Zoom");
         ImGui::BulletText("[MMB Drag] Pan Camera");
+    }
+
+    if (ImGui::CollapsingHeader("OptiX Denoiser", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        bool denoiserChanged = false;
+
+        // Enable/Disable denoiser
+        if (ImGui::Checkbox("Enable Denoiser", &USE_DENOISER)) {
+            denoiserChanged = true;
+            if (USE_DENOISER && !g_denoiser) {
+                // Initialize denoiser if not already done
+                g_denoiser = new OptiXDenoiser();
+                g_denoiser->init(renderState->camera.resolution.x,
+                    renderState->camera.resolution.y,
+                    DENOISE_WITH_NORMALS,
+                    DENOISE_WITH_ALBEDO);
+            }
+            else if (!USE_DENOISER && g_denoiser) {
+                g_denoiser->setEnabled(false);
+            }
+            else if (USE_DENOISER && g_denoiser) {
+                g_denoiser->setEnabled(true);
+            }
+        }
+
+        if (USE_DENOISER) {
+            ImGui::Indent();
+
+            // Guide layers
+            ImGui::Text("Guide Layers:");
+            ImGui::Indent();
+            if (ImGui::Checkbox("Use Normals", &DENOISE_WITH_NORMALS)) {
+                denoiserChanged = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Normal buffer helps preserve edges and geometric details");
+            }
+
+            if (ImGui::Checkbox("Use Albedo", &DENOISE_WITH_ALBEDO)) {
+                denoiserChanged = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Albedo buffer helps preserve texture details (experimental)");
+            }
+            ImGui::Unindent();
+
+            ImGui::Separator();
+
+            // Denoising parameters
+            ImGui::Text("Denoising Parameters:");
+            ImGui::Indent();
+
+            ImGui::SliderInt("Start Iteration", &DENOISE_START_ITER, 1, 5000);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Start denoising after this many iterations");
+            }
+
+            ImGui::SliderInt("Frequency", &DENOISE_FREQUENCY, 1, 10);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Apply denoiser every N iterations");
+            }
+
+            if (g_denoiser) {
+                float blendFactor = g_denoiser->getBlendFactor();
+                if (ImGui::SliderFloat("Blend Factor", &blendFactor, 0.0f, 1.0f, "%.2f")) {
+                    g_denoiser->setBlendFactor(blendFactor);
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("0 = Full denoise, 1 = No denoise (show original)");
+                }
+            }
+            ImGui::Unindent();
+
+            ImGui::Separator();
+
+            // Performance info
+            ImGui::Text("Performance:");
+            ImGui::Indent();
+            ImGui::Text("Denoiser Status: %s",
+                (g_denoiser && g_denoiser->isInitialized()) ? "Ready" : "Not Initialized");
+
+            if (iteration >= DENOISE_START_ITER && (iteration % DENOISE_FREQUENCY == 0)) {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Denoising Active");
+            }
+            else {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Accumulating Samples");
+            }
+            ImGui::Unindent();
+
+            // Reset button
+            if (denoiserChanged || ImGui::Button("Reset Denoiser")) {
+                if (g_denoiser) {
+                    delete g_denoiser;
+                    g_denoiser = nullptr;
+                }
+                if (USE_DENOISER) {
+                    g_denoiser = new OptiXDenoiser();
+                    g_denoiser->init(renderState->camera.resolution.x,
+                        renderState->camera.resolution.y,
+                        DENOISE_WITH_NORMALS,
+                        DENOISE_WITH_ALBEDO);
+                }
+                camchanged = true; // Reset the render
+            }
+
+            ImGui::Unindent();
+        }
     }
 
     ImGui::End();

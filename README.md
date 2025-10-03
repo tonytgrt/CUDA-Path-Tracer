@@ -11,6 +11,10 @@ CUDA Path Tracer
 
 ## WIP Renders
 
+### OptiX Denoiser
+See how OptiX Denoiser gives a high quality result with only 382 iterations.
+![](/img/wip-12.png)
+
 ### High Poly Chessboard
 ![](/img/wip-11.png)
 

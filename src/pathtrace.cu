@@ -18,6 +18,7 @@
 #include "utilities.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "optixDenoiser.h"
 
 #define ERRORCHECK 1
 
@@ -51,6 +52,91 @@ struct is_terminated {
         return path.remainingBounces <= 0;
     }
 };
+
+// Kernel for converting float3 to float4 (needed for OptiX)
+__global__ void convertFloat3ToFloat4Kernel(glm::vec3* src, float4* dst, unsigned int numPixels)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numPixels) return;
+
+    glm::vec3 pixel = src[idx];
+    dst[idx] = make_float4(pixel.x, pixel.y, pixel.z, 1.0f);
+}
+
+// Kernel for converting float4 to float3
+__global__ void convertFloat4ToFloat3Kernel(float4* src, glm::vec3* dst, unsigned int numPixels)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numPixels) return;
+
+    float4 pixel = src[idx];
+    dst[idx] = glm::vec3(pixel.x, pixel.y, pixel.z);
+}
+
+// Launcher functions callable from C++ (extern "C" for linking)
+extern "C" void launchConvertFloat3ToFloat4(
+    glm::vec3* src, float4* dst, unsigned int numPixels)
+{
+    const int blockSize = 256;
+    const int numBlocks = (numPixels + blockSize - 1) / blockSize;
+
+    convertFloat3ToFloat4Kernel << <numBlocks, blockSize >> > (src, dst, numPixels);
+    cudaDeviceSynchronize();
+}
+
+extern "C" void launchConvertFloat4ToFloat3(
+    float4* src, glm::vec3* dst, unsigned int numPixels)
+{
+    const int blockSize = 256;
+    const int numBlocks = (numPixels + blockSize - 1) / blockSize;
+
+    convertFloat4ToFloat3Kernel << <numBlocks, blockSize >> > (src, dst, numPixels);
+    cudaDeviceSynchronize();
+}
+
+// ===== ALSO ADD: Kernel to capture normals and albedo =====
+__global__ void captureNormalsAndAlbedo(
+    int num_paths,
+    PathSegment* paths,
+    ShadeableIntersection* intersections,
+    glm::vec3* normals,
+    glm::vec3* albedo,
+    Material* materials,
+    int iter,
+    int width,
+    int height)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_paths) return;
+
+    PathSegment& path = paths[idx];
+    ShadeableIntersection& isect = intersections[idx];
+
+    int pixelIdx = path.pixelIndex;
+    if (pixelIdx < 0 || pixelIdx >= width * height) return;
+
+    // Only capture on first bounce for clean normals/albedo
+    if (isect.t > 0.0f) {
+        // Capture normal (world space, normalized)
+        if (normals) {
+            normals[pixelIdx] = glm::normalize(isect.surfaceNormal);
+        }
+
+        // Capture albedo (material base color)
+        if (albedo && isect.materialId >= 0) {
+            albedo[pixelIdx] = materials[isect.materialId].color;
+        }
+    }
+    else {
+        // No intersection - set to background
+        if (normals) {
+            normals[pixelIdx] = glm::vec3(0.0f);
+        }
+        if (albedo) {
+            albedo[pixelIdx] = glm::vec3(0.0f);
+        }
+    }
+}
 
 
 __host__ __device__
@@ -111,6 +197,21 @@ static int** dev_bvh_triangle_indices = nullptr;
 static int num_meshes_with_bvh = 0;
 static bool USE_BVH = true;  // Toggle BVH usage
 static int BVH_MAX_TREE_DEPTH = 24;  // Configurable max depth
+
+OptiXDenoiser* g_denoiser = nullptr;
+
+// Device buffers for denoising
+glm::vec3* dev_normals = NULL;     // Normal buffer for denoising
+glm::vec3* dev_albedo = NULL;      // Albedo buffer for denoising (optional)
+glm::vec3* dev_denoised = NULL;    // Denoised output buffer
+
+// Denoiser control flags
+bool USE_DENOISER = true;          // Enable/disable denoiser
+bool DENOISE_WITH_NORMALS = true;  // Use normal buffer as guide
+bool DENOISE_WITH_ALBEDO = false;  // Use albedo buffer as guide (optional)
+int DENOISE_START_ITER = 1;        // Start denoising after this many iterations
+int DENOISE_FREQUENCY = 1;         // Apply denoiser every N iterations
+
 
 
 void InitDataContainer(GuiDataContainer* imGuiData)
@@ -451,6 +552,27 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_intersections_sorted, pixelcount * sizeof(ShadeableIntersection));
     checkCUDAError("pathtraceInit - sorted data buffers");
 #endif
+
+    if (USE_DENOISER) {
+        cudaMalloc(&dev_normals, pixelcount * sizeof(glm::vec3));
+        cudaMemset(dev_normals, 0, pixelcount * sizeof(glm::vec3));
+
+        if (DENOISE_WITH_ALBEDO) {
+            cudaMalloc(&dev_albedo, pixelcount * sizeof(glm::vec3));
+            cudaMemset(dev_albedo, 0, pixelcount * sizeof(glm::vec3));
+        }
+
+        cudaMalloc(&dev_denoised, pixelcount * sizeof(glm::vec3));
+        cudaMemset(dev_denoised, 0, pixelcount * sizeof(glm::vec3));
+
+        // Initialize OptiX denoiser
+        if (!g_denoiser) {
+            g_denoiser = new OptiXDenoiser();
+            g_denoiser->init(cam.resolution.x, cam.resolution.y,
+                DENOISE_WITH_NORMALS, DENOISE_WITH_ALBEDO);
+            std::cout << "OptiX Denoiser initialized" << std::endl;
+        }
+    }
     
 
     checkCUDAError("pathtraceInit");
@@ -539,6 +661,26 @@ void pathtraceFree()
     if (dev_bvh_triangle_indices) {
         cudaFree(dev_bvh_triangle_indices);
         dev_bvh_triangle_indices = nullptr;
+    }
+
+    // Free denoising buffers
+    if (dev_normals) {
+        cudaFree(dev_normals);
+        dev_normals = NULL;
+    }
+    if (dev_albedo) {
+        cudaFree(dev_albedo);
+        dev_albedo = NULL;
+    }
+    if (dev_denoised) {
+        cudaFree(dev_denoised);
+        dev_denoised = NULL;
+    }
+
+    // Cleanup denoiser
+    if (g_denoiser) {
+        delete g_denoiser;
+        g_denoiser = nullptr;
     }
 
     checkCUDAError("pathtraceFree");
@@ -2123,6 +2265,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     PathSegment* dev_path_end = dev_paths + pixelcount;
     int num_paths = dev_path_end - dev_paths;
 
+    if (USE_DENOISER && iter == 1) {
+        cudaMemset(dev_normals, 0, pixelcount * sizeof(glm::vec3));
+        if (DENOISE_WITH_ALBEDO) {
+            cudaMemset(dev_albedo, 0, pixelcount * sizeof(glm::vec3));
+        }
+    }
+
     // --- PathSegment Tracing Stage ---
     // Shoot ray into scene, bounce between objects, push shading chunks
 
@@ -2202,6 +2351,22 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         }
 #endif
 
+        if (USE_DENOISER && depth == 0) {  // Only on first bounce
+            dim3 captureBlocks = (num_paths + blockSize1d - 1) / blockSize1d;
+            captureNormalsAndAlbedo << <captureBlocks, blockSize1d >> > (
+                num_paths,
+                dev_paths,
+                dev_intersections,
+                dev_normals,
+                DENOISE_WITH_ALBEDO ? dev_albedo : nullptr,
+                dev_materials,
+                iter,
+                cam.resolution.x,
+                cam.resolution.y
+                );
+            checkCUDAError("capture normals and albedo");
+        }
+
         // TODO:
         // --- Shading Stage ---
         // Shade path segments based on intersections and generate new rays by
@@ -2267,14 +2432,49 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
     finalGather<<<numBlocksPixels, blockSize1d>>>(num_paths, dev_image, dev_paths);
 
+    bool shouldDenoise = USE_DENOISER &&
+        g_denoiser &&
+        g_denoiser->isInitialized() &&
+        iter >= DENOISE_START_ITER &&
+        (iter % DENOISE_FREQUENCY == 0);
+
+    if (shouldDenoise) {
+        // Copy current accumulated image to denoised buffer
+        cudaMemcpy(dev_denoised, dev_image, pixelcount * sizeof(glm::vec3),
+            cudaMemcpyDeviceToDevice);
+
+        // Apply denoiser
+        g_denoiser->denoise(
+            dev_denoised,                              // Beauty buffer (input/output)
+            DENOISE_WITH_NORMALS ? dev_normals : nullptr,  // Normal buffer (optional)
+            DENOISE_WITH_ALBEDO ? dev_albedo : nullptr,    // Albedo buffer (optional)
+            dev_denoised                               // Output buffer
+        );
+
+        // Send denoised result to PBO for display
+        sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_denoised);
+
+        // Copy denoised result to host
+        cudaMemcpy(hst_scene->state.image.data(), dev_denoised,
+            pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    }
+    else {
+        // Send regular accumulated image to PBO
+        sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);
+
+        // Retrieve image from GPU
+        cudaMemcpy(hst_scene->state.image.data(), dev_image,
+            pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    }
+
     ///////////////////////////////////////////////////////////////////////////
 
     // Send results to OpenGL buffer for rendering
-    sendImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, iter, dev_image);
+    //sendImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, iter, dev_image);
 
     // Retrieve image from GPU
-    cudaMemcpy(hst_scene->state.image.data(), dev_image,
-        pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    //cudaMemcpy(hst_scene->state.image.data(), dev_image,
+    //    pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
 
     checkCUDAError("pathtrace");
 }
