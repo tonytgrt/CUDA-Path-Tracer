@@ -1513,6 +1513,387 @@ __device__ float environmentPdfImportance(
     return fmaxf(pdf, 1e-6f);
 }
 
+
+
+// ==========================================
+// BSSRDF HELPER FUNCTIONS
+// ==========================================
+
+// Christensen-Burley diffusion profile approximation
+__device__ glm::vec3 evaluateChristensenBurleyProfile(
+    float distance,
+    const glm::vec3& subsurfaceRadius,
+    const glm::vec3& subsurfaceColor
+) {
+    glm::vec3 s = glm::vec3(1.9f) - subsurfaceColor +
+        glm::vec3(3.5f) * (subsurfaceColor - glm::vec3(0.8f)) *
+        (subsurfaceColor - glm::vec3(0.8f));
+
+    glm::vec3 d = subsurfaceRadius;
+    glm::vec3 profile = glm::vec3(0.0f);
+
+    for (int i = 0; i < 3; i++) {
+        float r = distance / fmaxf(d[i], 0.0001f);
+        float exp1 = expf(-s[i] * r);
+        float exp2 = expf(-s[i] * r / 3.0f);
+        profile[i] = (exp1 + exp2) / (8.0f * PI * d[i] * r);
+    }
+
+    return profile * subsurfaceColor;
+}
+
+// Sample a point for subsurface scattering using disk sampling
+__device__ glm::vec3 sampleSubsurfaceScatterPoint(
+    const glm::vec3& hitPoint,
+    const glm::vec3& normal,
+    const glm::vec3& tangent,
+    const glm::vec3& bitangent,
+    float maxRadius,
+    thrust::default_random_engine& rng
+) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    // Sample radius using importance sampling
+    float u = u01(rng);
+    float radius = maxRadius * sqrtf(u);
+
+    // Sample angle uniformly
+    float theta = 2.0f * PI * u01(rng);
+
+    // Convert to Cartesian coordinates in tangent space
+    float x = radius * cosf(theta);
+    float y = radius * sinf(theta);
+
+    // Transform to world space
+    glm::vec3 offset = x * tangent + y * bitangent;
+
+    return hitPoint + offset;
+}
+
+// Compute transmittance through the medium
+__device__ float computeTransmittance(
+    float distance,
+    float extinctionCoeff
+) {
+    return expf(-extinctionCoeff * distance);
+}
+
+// Build orthonormal basis from normal
+__device__ void buildOrthonormalBasis(
+    const glm::vec3& normal,
+    glm::vec3& tangent,
+    glm::vec3& bitangent
+) {
+    if (fabs(normal.x) > fabs(normal.y)) {
+        tangent = glm::normalize(glm::vec3(-normal.z, 0, normal.x));
+    }
+    else {
+        tangent = glm::normalize(glm::vec3(0, -normal.z, normal.y));
+    }
+    bitangent = glm::cross(normal, tangent);
+}
+
+
+// ==========================================
+// HELPER FUNCTION TO SAMPLE POINTS ON GEOMETRY
+// ==========================================
+
+__device__ glm::vec3 samplePointOnGeom(
+    const Geom& geom,
+    thrust::default_random_engine& rng
+) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    if (geom.type == SPHERE) {
+        // Uniform sphere sampling
+        float theta = 2.0f * PI * u01(rng);
+        float phi = acosf(1.0f - 2.0f * u01(rng));
+
+        glm::vec3 localPoint = glm::vec3(
+            sinf(phi) * cosf(theta),
+            sinf(phi) * sinf(theta),
+            cosf(phi)
+        ) * 0.5f; // Radius is 0.5 for unit sphere
+
+        // Transform to world space
+        glm::vec3 worldPoint = glm::vec3(geom.transform * glm::vec4(localPoint, 1.0f));
+        return worldPoint;
+    }
+    else if (geom.type == CUBE) {
+        // Sample one of the six faces
+        int face = (int)(u01(rng) * 6.0f);
+        float u = u01(rng) - 0.5f;
+        float v = u01(rng) - 0.5f;
+
+        glm::vec3 localPoint;
+        switch (face) {
+        case 0: localPoint = glm::vec3(0.5f, u, v); break;  // +X
+        case 1: localPoint = glm::vec3(-0.5f, u, v); break; // -X
+        case 2: localPoint = glm::vec3(u, 0.5f, v); break;  // +Y
+        case 3: localPoint = glm::vec3(u, -0.5f, v); break; // -Y
+        case 4: localPoint = glm::vec3(u, v, 0.5f); break;  // +Z
+        case 5: localPoint = glm::vec3(u, v, -0.5f); break; // -Z
+        }
+
+        glm::vec3 worldPoint = glm::vec3(geom.transform * glm::vec4(localPoint, 1.0f));
+        return worldPoint;
+    }
+
+    // Default fallback - use translation
+    return geom.translation;
+}
+
+// ==========================================
+// ENHANCED SHADE PBR WITH SUBSURFACE SCATTERING
+// ==========================================
+
+__device__ void shadePBRWithSSS(
+    PathSegment& pathSegment,
+    const ShadeableIntersection& intersection,
+    const Material& material,
+    const glm::vec3& texturedColor,
+    float textureAlpha,
+    Geom* geoms,
+    int num_geoms,
+    Material* materials,
+    LightInfo* lights,
+    int num_lights,
+    EnvironmentMap& envMap,
+    thrust::default_random_engine& rng
+) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    glm::vec3 intersectionPoint = pathSegment.ray.origin +
+        pathSegment.ray.direction * intersection.t;
+    glm::vec3 normal = intersection.surfaceNormal;
+    glm::vec3 wo = -pathSegment.ray.direction;
+
+    // Material properties
+    glm::vec3 albedo = texturedColor;
+    float roughness = glm::clamp(material.roughness, 0.02f, 1.0f);
+    float metallic = material.metallic;
+
+    // Check if subsurface scattering is enabled
+    bool useSSS = material.subsurfaceEnabled > 0 && metallic < 0.5f; // SSS doesn't make sense for metals
+
+    // Combine material transparency with texture alpha
+    float combinedTransparency = material.transparency;
+    if (textureAlpha < 1.0f) {
+        float textureTransparency = 1.0f - textureAlpha;
+        combinedTransparency = 1.0f - ((1.0f - combinedTransparency) * (1.0f - textureTransparency));
+    }
+
+    // Calculate F0 (reflectance at normal incidence)
+    glm::vec3 F0 = glm::vec3(0.04f);
+    F0 = glm::mix(F0, albedo, metallic);
+
+    // Handle transparency/transmission (existing code)
+    if (combinedTransparency > 0.0f && u01(rng) < combinedTransparency) {
+        // [Keep existing transparency handling code]
+        float ior = material.indexOfRefraction > 0 ? material.indexOfRefraction : 1.5f;
+        bool entering = glm::dot(normal, wo) > 0;
+        glm::vec3 n = entering ? normal : -normal;
+        float eta = entering ? (1.0f / ior) : ior;
+
+        glm::vec3 wi = glm::refract(-wo, n, eta);
+        if (glm::length(wi) > 0.0f) {
+            pathSegment.ray.origin = intersectionPoint - n * 0.001f;
+            pathSegment.ray.direction = wi;
+            pathSegment.remainingBounces--;
+        }
+        else {
+            // Total internal reflection
+            wi = glm::reflect(-wo, n);
+            pathSegment.ray.origin = intersectionPoint + n * 0.001f;
+            pathSegment.ray.direction = wi;
+            pathSegment.remainingBounces--;
+        }
+        return;
+    }
+
+    // SUBSURFACE SCATTERING PATH
+    if (useSSS && u01(rng) < 0.5f) { // 50% chance to take SSS path vs regular BRDF
+        // Build tangent space
+        glm::vec3 tangent, bitangent;
+        buildOrthonormalBasis(normal, tangent, bitangent);
+
+        // Sample exit point using disk sampling
+        float maxRadius = material.subsurfaceScale * glm::length(material.subsurfaceRadiusRGB);
+        glm::vec3 exitPoint = sampleSubsurfaceScatterPoint(
+            intersectionPoint, normal, tangent, bitangent, maxRadius, rng
+        );
+
+        // Compute distance traveled through medium
+        float distance = glm::length(exitPoint - intersectionPoint);
+
+        // Evaluate BSSRDF using Christensen-Burley approximation
+        glm::vec3 bssrdf = evaluateChristensenBurleyProfile(
+            distance,
+            material.subsurfaceRadiusRGB * material.subsurfaceScale,
+            material.subsurfaceColor
+        );
+
+        // Apply phase function for anisotropic scattering
+        float cosTheta = glm::dot(wo, pathSegment.ray.direction);
+        float g = material.subsurfaceAnisotropy;
+        float phase = (1.0f - g * g) / (4.0f * PI * powf(1.0f + g * g - 2.0f * g * cosTheta, 1.5f));
+
+        // Modulate color by BSSRDF and phase function
+        pathSegment.color *= bssrdf * phase * albedo * 2.0f; // Factor of 2 to compensate for 50% probability
+
+        // Sample new outgoing direction (diffuse-like)
+        glm::vec3 wi = calculateRandomDirectionInHemisphere(normal, rng);
+
+        // Set up scattered ray
+        pathSegment.ray.origin = exitPoint + normal * 0.001f;
+        pathSegment.ray.direction = wi;
+        pathSegment.remainingBounces--;
+        pathSegment.prevIsSpecular = false;
+
+        return;
+    }
+
+    // REGULAR PBR BRDF PATH
+    // Direct lighting calculation (simplified for clarity)
+    glm::vec3 directLight = glm::vec3(0.0f);
+
+    // Sample lights for direct illumination
+    for (int i = 0; i < num_lights && i < 4; i++) { // Limit to 4 lights for performance
+        Geom& lightGeom = geoms[lights[i].geomIdx];
+
+        // Sample point on light
+        glm::vec3 lightSample = samplePointOnGeom(lightGeom, rng);
+        glm::vec3 toLight = lightSample - intersectionPoint;
+        float distToLight = glm::length(toLight);
+        glm::vec3 wi = glm::normalize(toLight);
+
+        // Check if light is visible
+        if (glm::dot(wi, normal) > 0.0f) {
+            // Cast shadow ray
+            Ray shadowRay;
+            shadowRay.origin = intersectionPoint + normal * 0.001f;
+            shadowRay.direction = wi;
+
+            bool occluded = false;
+            for (int j = 0; j < num_geoms; j++) {
+                if (j != lights[i].geomIdx) {
+                    glm::vec3 temp_intersect, temp_normal;
+                    bool temp_outside;
+                    float t = -1.0f;
+
+                    if (geoms[j].type == SPHERE) {
+                        t = sphereIntersectionTest(geoms[j], shadowRay,
+                            temp_intersect, temp_normal, temp_outside);
+                    }
+                    else if (geoms[j].type == CUBE) {
+                        t = boxIntersectionTest(geoms[j], shadowRay,
+                            temp_intersect, temp_normal, temp_outside);
+                    }
+
+                    if (t > 0.0f && t < distToLight - 0.001f) {
+                        occluded = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!occluded) {
+                // Add subsurface contribution for direct lighting if SSS is enabled
+                if (useSSS) {
+                    // Simplified single-scattering approximation for direct light
+                    float NdotL = fmaxf(0.0f, glm::dot(normal, wi));
+                    float transmittance = computeTransmittance(
+                        material.subsurfaceScale * 0.1f,
+                        1.0f / glm::length(material.subsurfaceRadiusRGB)
+                    );
+
+                    glm::vec3 subsurfaceContribution = material.subsurfaceColor *
+                        albedo * transmittance * NdotL;
+
+                    Material& lightMat = materials[lightGeom.materialid];
+                    directLight += subsurfaceContribution * lightMat.color *
+                        lightMat.emittance / (distToLight * distToLight);
+                }
+
+                // Regular PBR direct lighting
+                float NdotL = fmaxf(0.0f, glm::dot(normal, wi));
+                float NdotV = fmaxf(0.0f, glm::dot(normal, wo));
+                glm::vec3 h = glm::normalize(wi + wo);
+                float NdotH = fmaxf(0.0f, glm::dot(normal, h));
+                float VdotH = fmaxf(0.0f, glm::dot(wo, h));
+
+                // Calculate BRDF components
+                float D = GGX_D(normal, h, roughness);
+                float G = GGX_G(normal, wo, wi, roughness);
+                glm::vec3 F = fresnelSchlick(VdotH, F0);
+
+                glm::vec3 kS = F;
+                glm::vec3 kD = glm::vec3(1.0f) - kS;
+                kD *= 1.0f - metallic;
+
+                glm::vec3 diffuse = kD * albedo / PI;
+                glm::vec3 specular = (D * G * F) / fmaxf(4.0f * NdotV * NdotL, 0.001f);
+
+                glm::vec3 brdf = diffuse + specular;
+
+                Material& lightMat = materials[lightGeom.materialid];
+                directLight += brdf * lightMat.color * lightMat.emittance *
+                    NdotL / (distToLight * distToLight);
+            }
+        }
+    }
+
+    // Apply direct lighting contribution
+    if (glm::length(directLight) > 0.0f) {
+        pathSegment.color *= directLight;
+    }
+
+    // Indirect lighting - importance sample the BRDF
+    float specularProbability = 0.5f + 0.5f * metallic;
+
+    if (u01(rng) < specularProbability) {
+        // Sample specular lobe
+        glm::vec3 h = sampleGGX(normal, roughness, rng);
+        glm::vec3 wi = glm::reflect(-wo, h);
+
+        if (glm::dot(wi, normal) > 0.0f) {
+            float VdotH = fmaxf(0.0f, glm::dot(wo, h));
+            glm::vec3 F = fresnelSchlick(VdotH, F0);
+            glm::vec3 specColor = glm::mix(glm::vec3(1.0f), albedo, metallic);
+
+            pathSegment.color *= specColor * F / specularProbability;
+            pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
+            pathSegment.ray.direction = wi;
+            pathSegment.prevIsSpecular = true;
+        }
+        else {
+            pathSegment.remainingBounces = 0;
+            pathSegment.color = glm::vec3(0.0f);
+        }
+    }
+    else {
+        // Sample diffuse lobe
+        if (metallic < 1.0f) {
+            glm::vec3 wi = calculateRandomDirectionInHemisphere(normal, rng);
+
+            glm::vec3 diffuseColor = albedo * (1.0f - metallic);
+            pathSegment.color *= diffuseColor / (1.0f - specularProbability);
+
+            pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
+            pathSegment.ray.direction = wi;
+            pathSegment.prevIsSpecular = false;
+        }
+        else {
+            pathSegment.remainingBounces = 0;
+            pathSegment.color = glm::vec3(0.0f);
+        }
+    }
+
+    pathSegment.remainingBounces--;
+}
+
+
+
 // ===== MAIN PBR SHADING FUNCTION =====
 
 __device__ void shadePBR(
@@ -1741,6 +2122,8 @@ __device__ void shadePBR(
     directLight = clamp(directLight, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
     pathSegment.color += directLight;
 }
+
+
 
 __device__ void shadeDiffuseMIS(
     PathSegment& pathSegment,
@@ -2150,9 +2533,11 @@ __global__ void shadeMaterialMIS(
             // PBR materials can be both specular and diffuse depending on parameters
             // Consider it specular if it's smooth and metallic
             pathSegments[idx].prevIsSpecular = (material.roughness < 0.1f && material.metallic > 0.5f);
-            shadePBR(pathSegments[idx], intersection, material, materialColor,
-                textureAlpha,  // Pass texture alpha
-                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
+            //shadePBR(pathSegments[idx], intersection, material, materialColor,
+            //    textureAlpha,  // Pass texture alpha
+            //    geoms, num_geoms, materials, lights, num_lights, envMap, rng);
+            shadePBRWithSSS(pathSegments[idx], intersection, material, materialColor,
+                textureAlpha, geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
 
         default:
@@ -2446,8 +2831,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // Apply denoiser
         g_denoiser->denoise(
             dev_denoised,                              // Beauty buffer (input/output)
-            DENOISE_WITH_NORMALS ? dev_normals : nullptr,  // Normal buffer (optional)
-            DENOISE_WITH_ALBEDO ? dev_albedo : nullptr,    // Albedo buffer (optional)
+            DENOISE_WITH_NORMALS ? dev_normals : nullptr,  // Normal buffer 
+            DENOISE_WITH_ALBEDO ? dev_albedo : nullptr,    // Albedo buffer 
             dev_denoised                               // Output buffer
         );
 

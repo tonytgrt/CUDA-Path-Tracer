@@ -116,8 +116,8 @@
         "ITERATIONS":5000,
         "DEPTH":8,
         "FILE":"cornell",
-        "EYE":[0.0,5.0,10.5],
-        "LOOKAT":[0.0,5.0,0.0],
+        "EYE":[0.0,6.5,5.90],
+        "LOOKAT":[0.0,6.5,0.0],
         "UP":[0.0,1.0,0.0]
     },
     "EnvironmentMap":
@@ -171,22 +171,8 @@
         },
         {
             "TYPE":"sphere",
-            "MATERIAL":"refractive_white",
-            "TRANS":[-2.0,3.0,-1.0],
-            "ROTAT":[0.0,0.0,0.0],
-            "SCALE":[3.0,3.0,3.0]
-        },
-        {
-            "TYPE":"sphere",
-            "MATERIAL":"diffuse_white",
-            "TRANS":[2.0,3.0,-1.0],
-            "ROTAT":[0.0,0.0,0.0],
-            "SCALE":[3.0,3.0,3.0]
-        },
-        {
-            "TYPE":"sphere",
             "MATERIAL":"milk",
-            "TRANS":[0.0,6.0,-1.0],
+            "TRANS":[0.0,8.0,-1.0],
             "ROTAT":[0.0,0.0,0.0],
             "SCALE":[3.0,3.0,3.0]
         }

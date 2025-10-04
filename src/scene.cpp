@@ -667,6 +667,97 @@ void Scene::loadFromJSON(const std::string& jsonName)
                 // Clamp to valid range
                 newMaterial.metallic = glm::clamp(newMaterial.metallic, 0.0f, 1.0f);
             }
+
+            if (p.contains("SUBSURFACE_ENABLED")) {
+                newMaterial.subsurfaceEnabled = p["SUBSURFACE_ENABLED"];
+
+                if (newMaterial.subsurfaceEnabled > 0) {
+                    // Load subsurface color
+                    if (p.contains("SUBSURFACE_COLOR")) {
+                        const auto& sssColor = p["SUBSURFACE_COLOR"];
+                        newMaterial.subsurfaceColor = glm::vec3(
+                            sssColor[0], sssColor[1], sssColor[2]
+                        );
+                    }
+                    else {
+                        // Default to slightly tinted version of base color
+                        newMaterial.subsurfaceColor = newMaterial.color * glm::vec3(0.8f);
+                    }
+
+                    // Load per-channel subsurface radius
+                    if (p.contains("SUBSURFACE_RADIUS")) {
+                        const auto& sssRadius = p["SUBSURFACE_RADIUS"];
+                        if (sssRadius.is_array() && sssRadius.size() == 3) {
+                            newMaterial.subsurfaceRadiusRGB = glm::vec3(
+                                sssRadius[0], sssRadius[1], sssRadius[2]
+                            );
+                        }
+                        else if (sssRadius.is_number()) {
+                            float radius = sssRadius;
+                            newMaterial.subsurfaceRadiusRGB = glm::vec3(radius);
+                        }
+                    }
+                    else {
+                        // Default radius
+                        newMaterial.subsurfaceRadiusRGB = glm::vec3(0.01f);
+                    }
+
+                    // Load subsurface scale
+                    if (p.contains("SUBSURFACE_SCALE")) {
+                        newMaterial.subsurfaceScale = p["SUBSURFACE_SCALE"];
+                    }
+                    else {
+                        newMaterial.subsurfaceScale = 1.0f;
+                    }
+
+                    // Load subsurface anisotropy
+                    if (p.contains("SUBSURFACE_ANISOTROPY")) {
+                        newMaterial.subsurfaceAnisotropy = glm::clamp(
+                            (float)p["SUBSURFACE_ANISOTROPY"], -1.0f, 1.0f
+                        );
+                    }
+                    else {
+                        newMaterial.subsurfaceAnisotropy = 0.0f;
+                    }
+
+                    // Backwards compatibility: single radius value
+                    if (p.contains("SUBSURFACE_RADIUS_SINGLE")) {
+                        float radius = p["SUBSURFACE_RADIUS_SINGLE"];
+                        newMaterial.subsurfaceRadius = radius;
+                        // If not specified separately, use this for RGB channels
+                        if (!p.contains("SUBSURFACE_RADIUS")) {
+                            newMaterial.subsurfaceRadiusRGB = glm::vec3(radius);
+                        }
+                    }
+                    else {
+                        newMaterial.subsurfaceRadius = glm::length(
+                            newMaterial.subsurfaceRadiusRGB
+                        ) / 1.732f; // Average of RGB channels
+                    }
+
+                    std::cout << "  SSS Enabled: color("
+                        << newMaterial.subsurfaceColor.x << ", "
+                        << newMaterial.subsurfaceColor.y << ", "
+                        << newMaterial.subsurfaceColor.z << "), "
+                        << "radius("
+                        << newMaterial.subsurfaceRadiusRGB.x << ", "
+                        << newMaterial.subsurfaceRadiusRGB.y << ", "
+                        << newMaterial.subsurfaceRadiusRGB.z << "), "
+                        << "scale: " << newMaterial.subsurfaceScale << ", "
+                        << "anisotropy: " << newMaterial.subsurfaceAnisotropy
+                        << std::endl;
+                }
+            }
+            else {
+                // SSS disabled by default
+                newMaterial.subsurfaceEnabled = 0;
+                newMaterial.subsurfaceColor = glm::vec3(1.0f);
+                newMaterial.subsurfaceRadius = 0.01f;
+                newMaterial.subsurfaceRadiusRGB = glm::vec3(0.01f);
+                newMaterial.subsurfaceScale = 1.0f;
+                newMaterial.subsurfaceAnisotropy = 0.0f;
+            }
+
 			newMaterial.type = PBR;
         }
 

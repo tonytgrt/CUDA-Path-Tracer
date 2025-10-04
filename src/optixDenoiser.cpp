@@ -167,7 +167,7 @@ void OptiXDenoiser::denoise(void* beautyBuffer, void* normalBuffer, void* albedo
     // Compute HDR intensity (required for HDR denoising)
     OPTIX_CHECK(optixDenoiserComputeIntensity(
         m_denoiser,
-        0,  // stream
+        0,  
         &inputImage,
         m_intensity,
         m_scratch,
@@ -177,22 +177,18 @@ void OptiXDenoiser::denoise(void* beautyBuffer, void* normalBuffer, void* albedo
     // Compute average color
     OPTIX_CHECK(optixDenoiserComputeAverageColor(
         m_denoiser,
-        0,  // stream
+        0, 
         &inputImage,
         m_avgColor,
         m_scratch,
         m_scratchSize
     ));
 
-    // Setup denoiser params
     OptixDenoiserParams params = {};
     params.hdrIntensity = m_intensity;
     params.hdrAverageColor = m_avgColor;
     params.blendFactor = m_blendFactor;
-    // Note: denoiseAlpha was removed in newer OptiX versions
-    // Alpha mode is now set in OptixDenoiserLayer
 
-    // Setup guide layers
     OptixDenoiserGuideLayer guideLayer = {};
 
     if (m_useAlbedo && albedoBuffer) {
