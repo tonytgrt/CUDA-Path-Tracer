@@ -1962,6 +1962,9 @@ __device__ void shadeDiffuseMIS(
     glm::vec3 materialColor,
     Geom* geoms,
     int num_geoms,
+    Triangle* triangles,
+    BVHNode** bvhNodes,        // Array of BVH node pointers
+    int** bvhTriangleIndices,  // Array of triangle index pointers
     Material* materials,
     LightInfo* lights,
     int num_lights,
@@ -2056,6 +2059,22 @@ __device__ void shadeDiffuseMIS(
                             temp_outside
                         );
                     }
+                    else if (occluder.type == GLTF_MESH) {
+                        glm::vec2 temp_uv;
+                        int temp_material_id;
+                        t = meshIntersectionTestBVH(
+                            occluder, 
+                            triangles, 
+                            bvhNodes[occluder.bvhIndex], 
+                            bvhTriangleIndices[occluder.bvhIndex],
+                            shadowRay,
+                            temp_intersect,
+                            temp_normal,
+                            temp_outside,
+                            temp_uv,
+                            temp_material_id
+                        );
+					}
 
                     // Check if this object blocks the light
                     if (t > 0.001f && t < dist - 0.001f) {
@@ -2116,6 +2135,18 @@ __device__ void shadeDiffuseMIS(
                     t = boxIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
                 else if (geoms[i].type == SPHERE)
                     t = sphereIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
+				else if (geoms[i].type == GLTF_MESH) {
+                    glm::vec2 tmp_uv;
+                    int tmp_material_id;
+                    t = meshIntersectionTestBVH(
+                        geoms[i], triangles,
+                        bvhNodes[geoms[i].bvhIndex],
+                        bvhTriangleIndices[geoms[i].bvhIndex],
+                        shadowRay,
+                        tmp_i, tmp_n, tmp_o,
+                        tmp_uv, tmp_material_id
+					);
+				}
 
                 visible = (t < 0.001f);
             }
@@ -2389,7 +2420,13 @@ __global__ void shadeMaterialMIS(
         case DIFFUSE:
             pathSegments[idx].prevIsSpecular = false;
             shadeDiffuseMIS(pathSegments[idx], intersection, materialColor,
-                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
+                geoms, num_geoms, 
+                triangles,
+                bvhNodes,
+                bvhTriangleIndices, 
+                materials, lights, 
+                num_lights, envMap, 
+                rng);
             break;
 
         case SPECULAR:
