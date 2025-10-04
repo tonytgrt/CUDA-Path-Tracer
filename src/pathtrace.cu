@@ -1708,6 +1708,9 @@ __device__ void shadePBR(
     float textureAlpha, 
     Geom* geoms,
     int num_geoms,
+    Triangle* triangles,
+    BVHNode** bvhNodes,        // Array of BVH node pointers
+    int** bvhTriangleIndices,  // Array of triangle index pointers
     Material* materials,
     LightInfo* lights,
     int num_lights,
@@ -1832,19 +1835,19 @@ __device__ void shadePBR(
             else if (geoms[i].type == SPHERE) {
                 t = sphereIntersectionTest(geoms[i], shadowRay, temp_intersect, temp_normal, temp_outside);
             } 
-   //         else if (geoms[i].type == GLTF_MESH) {
-   //             glm::vec2 temp_uv;
-   //             int temp_material_id;
+            else if (geoms[i].type == GLTF_MESH) {
+                glm::vec2 temp_uv;
+                int temp_material_id;
 
-   //             t = meshIntersectionTestBVH(
-   //                 geoms[i], triangles,
-   //                 bvhNodes[geoms[i].bvhIndex],
-   //                 bvhTriangleIndices[geoms[i].bvhIndex],
-   //                 shadowRay,
-   //                 temp_intersect, temp_normal, temp_outside,
-   //                 temp_uv, temp_material_id
-   //             );
-			//}
+                t = meshIntersectionTestBVH(
+                    geoms[i], triangles,
+                    bvhNodes[geoms[i].bvhIndex],
+                    bvhTriangleIndices[geoms[i].bvhIndex],
+                    shadowRay,
+                    temp_intersect, temp_normal, temp_outside,
+                    temp_uv, temp_material_id
+                );
+			}
 
             if (t > 0.001f && t < distToLight - 0.001f) {
                 visible = false;
@@ -2287,6 +2290,9 @@ __global__ void shadeMaterialMIS(
     int num_textures,        // ADD THIS
     Geom* geoms,
     int num_geoms,
+    Triangle* triangles,
+    BVHNode** bvhNodes,        // Array of BVH node pointers
+    int** bvhTriangleIndices,  // Array of triangle index pointers
     LightInfo* lights,
     int num_lights,
     EnvironmentMap envMap,
@@ -2404,7 +2410,14 @@ __global__ void shadeMaterialMIS(
 
             shadePBR(pathSegments[idx], intersection, material, materialColor,
                 textureAlpha,  // Pass texture alpha
-                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
+                geoms, 
+                num_geoms, 
+                triangles,
+                bvhNodes,
+                bvhTriangleIndices,
+                materials, lights, 
+                num_lights, envMap, 
+                rng);
             break;
 
         default:
@@ -2640,6 +2653,9 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             num_textures,     
             dev_geoms,
             hst_scene->geoms.size(),
+            dev_triangles,
+            dev_bvh_nodes,
+            dev_bvh_triangle_indices,
             dev_lights,
             num_lights,
             dev_environmentMap,
