@@ -1803,7 +1803,7 @@ __device__ void shadePBR(
     F0 = glm::mix(F0, albedo, metallic);
 
     const float MIN_PDF = 1e-6f;
-    const float MAX_CONTRIBUTION = 20.0f;
+    const float MAX_CONTRIBUTION = 10.0f;
 
     // === DIRECT LIGHTING WITH MIS ===
     glm::vec3 directLight(0.0f);
@@ -2163,7 +2163,7 @@ __device__ void shadeDiffuseMIS(
             float NdotL = glm::dot(normal, wi);
 
             if (NdotL > 0.0f) {
-                // === SHADOW TEST (SIMPLIFIED) ===
+                // === SHADOW TEST ===
                 Ray shadowRay;
                 shadowRay.origin = intersectionPoint + normal * 0.001f;
                 shadowRay.direction = wi;
@@ -2709,6 +2709,11 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     PathSegment* dev_path_end = dev_paths + pixelcount;
     int num_paths = dev_path_end - dev_paths;
 
+    if (guiData != NULL)
+    {
+        guiData->TracedDepth = traceDepth;
+    }
+
     if (USE_DENOISER && iter == 1) {
         cudaMemset(dev_normals, 0, pixelcount * sizeof(glm::vec3));
         if (DENOISE_WITH_ALBEDO) {
@@ -2870,10 +2875,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             iterationComplete = true;
         }
 
-        if (guiData != NULL)
-        {
-            guiData->TracedDepth = depth;
-        }
+
     }
 
     // Assemble this iteration and apply it to the image

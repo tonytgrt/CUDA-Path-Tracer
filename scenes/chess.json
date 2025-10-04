@@ -19,10 +19,10 @@
         }
     },
     "Camera": {
-        "RES": [800, 800],
+        "RES": [1200, 1200],
         "FOVY": 45.0,
         "ITERATIONS": 5000,
-        "DEPTH": 8,
+        "DEPTH": 10,
         "FILE": "chess",
         "EYE": [0.0, 5.0, 10.5],
         "LOOKAT": [0.0, 5.0, 0.0],
@@ -31,13 +31,13 @@
     "EnvironmentMap":
     {
         "FILE":"../envmaps/interior_atelier_soft_daylight.hdr",
-        "INTENSITY":1.0
+        "INTENSITY":0.7
     },
     "Objects": [
         {
             "TYPE": "cube",
             "MATERIAL": "light",
-            "TRANS": [11.71, 10.0, 13.22],
+            "TRANS": [10.0, 6.0, 13.22],
             "ROTAT": [90.0, 0.0, -45.0],
             "SCALE": [10.0, 0.1, 10.0]
         },
