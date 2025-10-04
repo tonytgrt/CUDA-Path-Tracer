@@ -11,6 +11,9 @@ CUDA Path Tracer
 
 ## WIP Renders
 
+### Subsurface Scattering
+![](/img/wip-13.png)
+
 ### OptiX Denoiser
 See how OptiX Denoiser gives a high quality result with only 382 iterations.
 ![](/img/wip-12.png)

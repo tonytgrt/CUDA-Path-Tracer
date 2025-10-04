@@ -102,7 +102,7 @@
             "METALLIC": 0.0,
             "TRANSPARENCY": 0.2,
             "IOR": 1.35,
-            "SUBSURFACE_ENABLED": 0,
+            "SUBSURFACE_ENABLED": 1,
             "SUBSURFACE_COLOR": [0.95, 0.93, 0.88],
             "SUBSURFACE_RADIUS": [0.10, 0.08, 0.05],
             "SUBSURFACE_SCALE": 3.0,

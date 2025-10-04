@@ -42,9 +42,10 @@ static bool camchanged = true;
 static float dtheta = 0, dphi = 0;
 static glm::vec3 cammove;
 
+
 static int guiWidth = 400;  // Width of the ImGui panel
-static int windowWidth;      // Total window width
-static int windowHeight;     // Total window height
+static int windowWidth;      
+static int windowHeight;    
 static bool firstFrame = true;
 static float zoomSpeed = 0.1f;
 
@@ -52,6 +53,10 @@ static float zoomSpeed = 0.1f;
 float zoom, theta, phi;
 glm::vec3 cameraPosition;
 glm::vec3 ogLookAt; // for recentering the camera
+glm::vec3 ogCameraPosition;
+glm::vec3 ogCameraUp;
+float ogTheta, ogPhi, ogZoom;
+
 
 Scene* scene;
 GuiDataContainer* guiData;
@@ -196,6 +201,7 @@ void initCuda()
 {
     cudaGLSetGLDevice(0);
 
+
     // Clean up on program exit
     atexit(cleanupCuda);
 }
@@ -326,6 +332,11 @@ void reloadScene(const std::string& sceneFilePath) {
     phi = glm::acos(glm::dot(glm::normalize(viewXZ), glm::vec3(0, 0, -1)));
     theta = glm::acos(glm::dot(glm::normalize(viewZY), glm::vec3(0, 1, 0)));
     ogLookAt = cam.lookAt;
+    ogCameraPosition = cam.position;
+    ogCameraUp = cam.up;
+    ogZoom = zoom;
+    ogTheta = theta;
+    ogPhi = phi;
     zoom = glm::length(cam.position - ogLookAt);
 
     // Reinitialize path tracer
@@ -470,18 +481,24 @@ void RenderImGui()
     ImGui::Text("Camera Controls");
     ImGui::Separator();
 
+    Camera& cam = renderState->camera;
+
     if (ImGui::Button("Reset Camera", ImVec2(-1, 25))) {
         camchanged = true;
-        Camera& cam = renderState->camera;
         cam.lookAt = ogLookAt;
+		cam.position = ogCameraPosition;
+		cam.up = ogCameraUp;
+		theta = ogTheta;
+		phi = ogPhi;
         zoom = glm::length(cam.position - ogLookAt);  // Reset zoom too
         iteration = 0;
     }
 
-    ImGui::Text("Position:");
-    ImGui::BulletText("X: %.2f", cameraPosition.x);
-    ImGui::BulletText("Y: %.2f", cameraPosition.y);
-    ImGui::BulletText("Z: %.2f", cameraPosition.z);
+    ImGui::Text("   Position    Look At    Up Vector");
+    ImGui::Text("X: %.2f        %.2f       %.2f", cameraPosition.x, cam.lookAt.x, cam.up.x);
+    ImGui::Text("Y: %.2f        %.2f       %.2f", cameraPosition.y, cam.lookAt.y, cam.up.y);
+    ImGui::Text("Z: %.2f        %.2f       %.2f", cameraPosition.z, cam.lookAt.z, cam.up.z);
+
 
     ImGui::Spacing();
     ImGui::Text("Zoom: %.2f", zoom);
@@ -768,6 +785,11 @@ int main(int argc, char** argv)
     phi = glm::acos(glm::dot(glm::normalize(viewXZ), glm::vec3(0, 0, -1)));
     theta = glm::acos(glm::dot(glm::normalize(viewZY), glm::vec3(0, 1, 0)));
     ogLookAt = cam.lookAt;
+    ogCameraPosition = cam.position;
+    ogCameraUp = cam.up;
+    ogZoom = zoom;
+    ogTheta = theta;
+    ogPhi = phi;
     zoom = glm::length(cam.position - ogLookAt);
 
     // Initialize CUDA and GL components
@@ -885,6 +907,12 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
                 renderState = &scene->state;
                 Camera& cam = renderState->camera;
                 cam.lookAt = ogLookAt;
+                cam.position = ogCameraPosition;
+                cam.up = ogCameraUp;
+                theta = ogTheta;
+                phi = ogPhi;
+                zoom = glm::length(cam.position - ogLookAt);  // Reset zoom too
+                iteration = 0;
                 break;
         }
     }
@@ -936,9 +964,31 @@ void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
     else if (rightMousePressed)
     {
         // Alternative zoom method with right mouse button (finer control)
-        float zoomDelta = (ypos - lastY) / height;
-        zoom *= (1.0f + zoomDelta);
-        zoom = std::fmax(0.1f, std::fmin(zoom, 100.0f));
+        //float zoomDelta = (ypos - lastY) / height;
+        //zoom *= (1.0f + zoomDelta);
+        //zoom = std::fmax(0.1f, std::fmin(zoom, 100.0f));
+        //camchanged = true;
+
+        renderState = &scene->state;
+        Camera& cam = renderState->camera;
+
+        // Calculate movement speed based on current zoom level
+        float moveSpeed = zoom * 0.01f;
+
+        // Move camera position along right and up vectors
+        glm::vec3 right = cam.right;
+        glm::vec3 up = cam.up;
+
+        // Apply movement
+        float deltaX = (xpos - lastX) * moveSpeed;
+        float deltaY = (ypos - lastY) * moveSpeed;
+
+        cam.lookAt += -right * deltaX + up * deltaY;
+        cam.position += -right * deltaX + up * deltaY;
+
+        // Update camera position for display
+        cameraPosition = cam.position;
+
         camchanged = true;
     }
     else if (middleMousePressed)
