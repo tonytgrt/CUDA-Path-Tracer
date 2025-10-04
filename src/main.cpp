@@ -513,11 +513,6 @@ void RenderImGui()
         camchanged = true;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Reset", ImVec2(60, 0))) {
-        zoom = glm::length(scene->state.camera.position - scene->state.camera.lookAt);
-        camchanged = true;
-    }
-    ImGui::SameLine();
     if (ImGui::Button("+", ImVec2(30, 0))) {
         zoom *= 0.8f;
         zoom = std::fmax(0.1f, zoom);
