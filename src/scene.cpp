@@ -82,9 +82,9 @@ int Scene::loadGLTFTexture(const tinygltf::Texture& gltfTex,
     // Store the mapping
     gltfTextureToSceneTexture[gltfTextureIndex] = sceneTextureIdx;
 
-    cout << "Loaded texture: " << image.name
-        << " (" << tex.width << "x" << tex.height << ", " << tex.components << " channels)"
-        << " GLTF index " << gltfTextureIndex << " -> Scene index " << sceneTextureIdx << endl;
+    //cout << "Loaded texture: " << image.name
+    //    << " (" << tex.width << "x" << tex.height << ", " << tex.components << " channels)"
+    //    << " GLTF index " << gltfTextureIndex << " -> Scene index " << sceneTextureIdx << endl;
 
     return sceneTextureIdx;
 }
@@ -132,7 +132,7 @@ int Scene::loadGLTFMaterial(const tinygltf::Material& gltfMat,
         auto it = textureMapping.find(pbr.baseColorTexture.index);
         if (it != textureMapping.end()) {
             mat.baseColorTextureIdx = it->second;
-            cout << "Material uses base color texture: Scene index " << it->second << endl;
+            //cout << "Material uses base color texture: Scene index " << it->second << endl;
         }
     }
 
@@ -140,7 +140,7 @@ int Scene::loadGLTFMaterial(const tinygltf::Material& gltfMat,
         auto it = textureMapping.find(pbr.metallicRoughnessTexture.index);
         if (it != textureMapping.end()) {
             mat.metallicRoughnessTextureIdx = it->second;
-            cout << "Material uses metallic-roughness texture: Scene index " << it->second << endl;
+            //cout << "Material uses metallic-roughness texture: Scene index " << it->second << endl;
         }
     }
 
@@ -148,7 +148,7 @@ int Scene::loadGLTFMaterial(const tinygltf::Material& gltfMat,
         auto it = textureMapping.find(gltfMat.normalTexture.index);
         if (it != textureMapping.end()) {
             mat.normalTextureIdx = it->second;
-            cout << "Material uses normal texture: Scene index " << it->second << endl;
+            //cout << "Material uses normal texture: Scene index " << it->second << endl;
         }
     }
 
@@ -156,7 +156,7 @@ int Scene::loadGLTFMaterial(const tinygltf::Material& gltfMat,
         auto it = textureMapping.find(gltfMat.emissiveTexture.index);
         if (it != textureMapping.end()) {
             mat.emissiveTextureIdx = it->second;
-            cout << "Material uses emissive texture: Scene index " << it->second << endl;
+            //cout << "Material uses emissive texture: Scene index " << it->second << endl;
         }
     }
 
@@ -164,7 +164,7 @@ int Scene::loadGLTFMaterial(const tinygltf::Material& gltfMat,
         auto it = textureMapping.find(gltfMat.occlusionTexture.index);
         if (it != textureMapping.end()) {
             mat.occlusionTextureIdx = it->second;
-            cout << "Material uses occlusion texture: Scene index " << it->second << endl;
+            //cout << "Material uses occlusion texture: Scene index " << it->second << endl;
         }
     }
 
@@ -248,7 +248,7 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     for (const auto& gltfMat : model.materials) {
         int sceneMaterialIdx = loadGLTFMaterial(gltfMat, model, localTextureMapping);
         gltfMaterialToSceneMaterial.push_back(sceneMaterialIdx);
-        cout << "Loaded material '" << gltfMat.name << "' -> Scene index " << sceneMaterialIdx << endl;
+        //cout << "Loaded material '" << gltfMat.name << "' -> Scene index " << sceneMaterialIdx << endl;
     }
 
     // If no materials in GLTF, create a default mapping
@@ -328,7 +328,7 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                 // Process mesh if present
                 if (node.mesh >= 0 && node.mesh < model.meshes.size()) {
                     const tinygltf::Mesh& mesh = model.meshes[node.mesh];
-                    cout << "Processing mesh: " << mesh.name << " with " << mesh.primitives.size() << " primitives" << endl;
+                    //cout << "Processing mesh: " << mesh.name << " with " << mesh.primitives.size() << " primitives" << endl;
 
                     for (size_t primIdx = 0; primIdx < mesh.primitives.size(); ++primIdx) {
                         const auto& primitive = mesh.primitives[primIdx];
@@ -353,8 +353,8 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                             sceneMaterialId = gltfMaterialToSceneMaterial[0];
                         }
 
-                        cout << "  Primitive " << primIdx << ": GLTF material " << primitive.material
-                            << " -> Scene material " << sceneMaterialId << endl;
+                        /*cout << "  Primitive " << primIdx << ": GLTF material " << primitive.material
+                            << " -> Scene material " << sceneMaterialId << endl;*/
 
                         // Get accessor for positions
                         const tinygltf::Accessor& posAccessor = model.accessors[primitive.attributes.at("POSITION")];

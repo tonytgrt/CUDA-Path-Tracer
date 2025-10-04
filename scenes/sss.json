@@ -115,7 +115,7 @@
         "FOVY":45.0,
         "ITERATIONS":5000,
         "DEPTH":8,
-        "FILE":"cornell",
+        "FILE":"sss",
         "EYE":[0.0,6.5,5.90],
         "LOOKAT":[0.0,6.5,0.0],
         "UP":[0.0,1.0,0.0]

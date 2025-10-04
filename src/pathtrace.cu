@@ -236,8 +236,8 @@ void initializeLights(Scene* scene) {
 
     for (int i = 0; i < scene->geoms.size(); i++) {
         int matId = scene->geoms[i].materialid;
-        //if (matId < 0) continue;
-        if (scene->materials[matId].emittance > 0.0f) {
+        if (matId >= 0 && matId < scene->materials.size() &&
+            scene->materials[matId].emittance > 0.0f) {
             LightInfo info;
             info.geomIdx = i;
             info.area = getGeomArea(scene->geoms[i]);
@@ -252,10 +252,15 @@ void initializeLights(Scene* scene) {
     }
 
     num_lights = lightInfos.size();
+
     if (num_lights > 0) {
         cudaMalloc(&dev_lights, num_lights * sizeof(LightInfo));
         cudaMemcpy(dev_lights, lightInfos.data(), num_lights * sizeof(LightInfo),
             cudaMemcpyHostToDevice);
+    }
+    else {
+        // Explicitly set to NULL when no lights
+        dev_lights = NULL;
     }
 
     //printf("Initialized %d light sources for MIS\n", num_lights);
@@ -1705,30 +1710,39 @@ __device__ void shadePBR(
     const ShadeableIntersection& intersection,
     const Material& material,
     const glm::vec3& texturedColor,
-    float textureAlpha, 
+    float textureAlpha,
     Geom* geoms,
     int num_geoms,
     Triangle* triangles,
-    BVHNode** bvhNodes,        // Array of BVH node pointers
-    int** bvhTriangleIndices,  // Array of triangle index pointers
+    BVHNode** bvhNodes,
+    int** bvhTriangleIndices,
     Material* materials,
     LightInfo* lights,
     int num_lights,
     EnvironmentMap& envMap,
     thrust::default_random_engine& rng
 ) {
+    // Safety check for lights array
+    if (lights == nullptr) {
+        num_lights = 0; // Force no lights if array is null
+    }
+
+    // Safety check for environment map
+    bool envMapValid = envMap.enabled && envMap.data != nullptr &&
+        envMap.width > 0 && envMap.height > 0;
+
     thrust::uniform_real_distribution<float> u01(0, 1);
 
     glm::vec3 intersectionPoint = pathSegment.ray.origin +
         pathSegment.ray.direction * intersection.t;
     glm::vec3 normal = intersection.surfaceNormal;
 
+    // Handle subsurface scattering if enabled
     if (material.subsurfaceEnabled > 0 && material.metallic < 0.5f) {
         if (sampleSubsurfaceScatteringPath(
             pathSegment, intersectionPoint, normal,
             material, texturedColor, rng)) {
-            // SSS path was taken, exit early
-            return;
+            return; // SSS path was taken, exit early
         }
     }
 
@@ -1739,48 +1753,35 @@ __device__ void shadePBR(
     float roughness = glm::clamp(material.roughness, 0.02f, 1.0f);
     float metallic = material.metallic;
 
-    // Combine material transparency with texture alpha
-    // Use multiplicative blending for proper transparency stacking
+    // Handle transparency/transmission
     float combinedTransparency = material.transparency;
     if (textureAlpha < 1.0f) {
-        // Convert alpha to transparency and combine
         float textureTransparency = 1.0f - textureAlpha;
         combinedTransparency = 1.0f - ((1.0f - combinedTransparency) * (1.0f - textureTransparency));
     }
 
-    // Calculate F0 (reflectance at normal incidence)
-    glm::vec3 F0 = glm::vec3(0.04f);
-    F0 = glm::mix(F0, albedo, metallic);
-
-    // Handle transparency/transmission
     if (combinedTransparency > 0.0f && u01(rng) < combinedTransparency) {
-        // Ray passes through the surface
+        // Handle transmission (keeping existing code)
         float ior = material.indexOfRefraction > 0 ? material.indexOfRefraction : 1.5f;
-
-        // Check if we need refraction
         bool entering = glm::dot(normal, wo) > 0;
         glm::vec3 n = entering ? normal : -normal;
         float eta = entering ? (1.0f / ior) : ior;
 
-        // Fresnel for transmission
         float cosTheta = glm::dot(n, wo);
         float k = 1.0f - eta * eta * (1.0f - cosTheta * cosTheta);
 
         glm::vec3 newDirection;
         if (k < 0.0f || roughness > 0.8f) {
-            // Total internal reflection or very rough - just pass through
             newDirection = pathSegment.ray.direction;
             pathSegment.ray.origin = intersectionPoint - n * 0.001f;
         }
         else {
-            // Refract
             newDirection = glm::normalize(
                 eta * (-wo) + (eta * cosTheta - sqrtf(k)) * n
             );
             pathSegment.ray.origin = intersectionPoint - n * 0.001f;
         }
 
-        // Add some roughness-based scattering for translucent materials
         if (roughness > 0.1f && roughness < 0.8f) {
             glm::vec3 scatter = glm::vec3(
                 u01(rng) - 0.5f,
@@ -1791,131 +1792,279 @@ __device__ void shadePBR(
         }
 
         pathSegment.ray.direction = newDirection;
-        // Tint by material color with reduced influence for transparency
         pathSegment.color *= glm::mix(glm::vec3(1.0f), albedo, 1.0f - combinedTransparency);
         return;
     }
 
-    // Opaque material - use PBR BRDF
+    // === OPAQUE PBR MATERIAL WITH MIS ===
 
-    // Direct lighting component for MIS
+    // Calculate F0 (reflectance at normal incidence)
+    glm::vec3 F0 = glm::vec3(0.04f);
+    F0 = glm::mix(F0, albedo, metallic);
+
     const float MIN_PDF = 1e-6f;
     const float MAX_CONTRIBUTION = 20.0f;
+
+    // === DIRECT LIGHTING WITH MIS ===
     glm::vec3 directLight(0.0f);
 
-    // Sample lights for direct lighting
-    if (num_lights > 0) {
-        // Pick a random light
-        int lightIdx = (int)(u01(rng) * num_lights);
-        if (lightIdx >= num_lights) lightIdx = num_lights - 1;
+    // Choose sampling strategy: 0 = light, 1 = BRDF, 2 = environment
+    // Only enable strategies that are actually available
+    float strategyChoice = u01(rng);
+    int strategy = 1; // Default to BRDF sampling
 
-        Geom& lightGeom = geoms[lights[lightIdx].geomIdx];
-        glm::vec3 lightPos = sampleLight(lightGeom, rng);
-        glm::vec3 wi = glm::normalize(lightPos - intersectionPoint);
+    if (num_lights > 0 && envMapValid) {
+        // All three strategies available
+        if (strategyChoice < 0.33f) strategy = 0;      // Light sampling
+        else if (strategyChoice < 0.66f) strategy = 1; // BRDF sampling  
+        else strategy = 2;                             // Environment sampling
+    }
+    else if (num_lights > 0 && !envMapValid) {
+        // Only light and BRDF sampling
+        strategy = (strategyChoice < 0.5f) ? 0 : 1;
+    }
+    else if (num_lights == 0 && envMapValid) {
+        // Only BRDF and environment sampling - NO LIGHT SAMPLING
+        strategy = (strategyChoice < 0.5f) ? 1 : 2;
+    }
+    else {
+        // Only BRDF sampling (no lights, no env)
+        strategy = 1;
+    }
 
-        // Shadow ray check
-        Ray shadowRay;
-        shadowRay.origin = intersectionPoint + normal * 0.001f;
-        shadowRay.direction = wi;
+    // Safety check: ensure we never try light sampling without lights
+    if (strategy == 0 && (num_lights == 0 || lights == nullptr)) {
+        strategy = 1; // Fallback to BRDF sampling
+    }
 
-        float distToLight = glm::length(lightPos - intersectionPoint);
-        bool visible = true;
+    if (strategy == 0 && num_lights > 0 && lights != nullptr) {
+        // === LIGHT SAMPLING ===
+        int lightIdx = min((int)(u01(rng) * num_lights), num_lights - 1);
+        LightInfo& lightInfo = lights[lightIdx];
+        Geom& lightGeom = geoms[lightInfo.geomIdx];
+        Material& lightMat = materials[lightGeom.materialid];
 
-        // Check for occlusion
-        for (int i = 0; i < num_geoms; i++) {
-            if (i == lights[lightIdx].geomIdx) continue;
+        glm::vec3 lightPoint = sampleLight(lightGeom, rng);
+        glm::vec3 wi = lightPoint - intersectionPoint;
+        float dist = glm::length(wi);
 
-            glm::vec3 temp_intersect, temp_normal;
-            bool temp_outside;
-            float t = -1;
+        if (dist > 0.01f) {
+            wi /= dist;
+            float NdotL = glm::dot(normal, wi);
 
-            if (geoms[i].type == CUBE) {
-                t = boxIntersectionTest(geoms[i], shadowRay, temp_intersect, temp_normal, temp_outside);
-            }
-            else if (geoms[i].type == SPHERE) {
-                t = sphereIntersectionTest(geoms[i], shadowRay, temp_intersect, temp_normal, temp_outside);
-            } 
-            else if (geoms[i].type == GLTF_MESH) {
-                glm::vec2 temp_uv;
-                int temp_material_id;
+            if (NdotL > 0.0f) {
+                // Shadow test
+                Ray shadowRay;
+                shadowRay.origin = intersectionPoint + normal * 0.001f;
+                shadowRay.direction = wi;
 
-                t = meshIntersectionTestBVH(
-                    geoms[i], triangles,
-                    bvhNodes[geoms[i].bvhIndex],
-                    bvhTriangleIndices[geoms[i].bvhIndex],
-                    shadowRay,
-                    temp_intersect, temp_normal, temp_outside,
-                    temp_uv, temp_material_id
-                );
-			}
+                bool visible = true;
+                for (int geomIdx = 0; geomIdx < num_geoms; geomIdx++) {
+                    if (geomIdx == lightInfo.geomIdx) continue;
 
-            if (t > 0.001f && t < distToLight - 0.001f) {
-                visible = false;
-                break;
+                    Geom& occluder = geoms[geomIdx];
+                    glm::vec3 temp_intersect, temp_normal;
+                    bool temp_outside;
+                    float t = -1.0f;
+
+                    if (occluder.type == SPHERE) {
+                        t = sphereIntersectionTest(occluder, shadowRay,
+                            temp_intersect, temp_normal, temp_outside);
+                    }
+                    else if (occluder.type == CUBE) {
+                        t = boxIntersectionTest(occluder, shadowRay,
+                            temp_intersect, temp_normal, temp_outside);
+                    }
+                    else if (occluder.type == GLTF_MESH) {
+                        glm::vec2 temp_uv;
+                        int temp_material_id;
+                        t = meshIntersectionTestBVH(
+                            occluder, triangles,
+                            bvhNodes[occluder.bvhIndex],
+                            bvhTriangleIndices[occluder.bvhIndex],
+                            shadowRay,
+                            temp_intersect, temp_normal, temp_outside,
+                            temp_uv, temp_material_id
+                        );
+                    }
+
+                    if (t > 0.001f && t < dist - 0.001f) {
+                        visible = false;
+                        break;
+                    }
+                }
+
+                if (visible) {
+                    // Calculate PBR BRDF
+                    glm::vec3 h = glm::normalize(wi + wo);
+                    float NdotV = fmaxf(0.0f, glm::dot(normal, wo));
+                    float NdotH = fmaxf(0.0f, glm::dot(normal, h));
+                    float VdotH = fmaxf(0.0f, glm::dot(wo, h));
+
+                    float D = GGX_D(normal, h, roughness);
+                    float G = GGX_G(normal, wo, wi, roughness);
+                    glm::vec3 F = fresnelSchlick(VdotH, F0);
+
+                    // Cook-Torrance BRDF
+                    glm::vec3 numerator = D * G * F;
+                    float denominator = 4.0f * NdotV * NdotL;
+                    glm::vec3 specular = numerator / fmaxf(0.001f, denominator);
+
+                    glm::vec3 kS = F;
+                    glm::vec3 kD = glm::vec3(1.0f) - kS;
+                    kD *= 1.0f - metallic;
+
+                    glm::vec3 diffuse = kD * albedo / PI;
+                    glm::vec3 brdf = diffuse + specular;
+
+                    // Calculate PDFs for MIS
+                    glm::vec3 lightNormal = glm::normalize(lightPoint - lightGeom.translation);
+                    float NdotL_light = fmaxf(0.0f, glm::dot(-wi, lightNormal));
+
+                    float pdfLight = 1.0f / (fmaxf(lightInfo.area, 0.01f) * num_lights);
+                    float pdfBRDF = (NdotL / PI) * (1.0f - metallic) + // Diffuse PDF
+                        (D * NdotH / (4.0f * VdotH)) * metallic; // Specular PDF
+                    float pdfEnv = envMapValid ?
+                        environmentPdfImportance(wi, envMap) : 0.0f;
+
+                    // MIS weight
+                    float sumPdf = pdfLight + pdfBRDF + pdfEnv;
+                    float weight = pdfLight / fmaxf(sumPdf, MIN_PDF);
+
+                    glm::vec3 Le = lightMat.color * lightMat.emittance;
+                    float geometryTerm = NdotL * NdotL_light / (dist * dist);
+
+                    // Compensate for strategy selection
+                    float strategyProb;
+                    if (num_lights > 0 && envMapValid) {
+                        strategyProb = 0.33f; // 3 strategies
+                    }
+                    else if (num_lights > 0 || envMapValid) {
+                        strategyProb = 0.5f;  // 2 strategies
+                    }
+                    else {
+                        strategyProb = 1.0f;  // 1 strategy
+                    }
+
+                    directLight += weight * brdf * Le * geometryTerm *
+                        (float)num_lights / (strategyProb * fmaxf(pdfLight, MIN_PDF));
+                }
             }
         }
+    }
+    else if (strategy == 2 && envMapValid) {
+        // === ENVIRONMENT SAMPLING ===
+        glm::vec3 envDir;
+        float envPdf;
+        glm::vec3 envColor = sampleEnvironmentMapImportance(envMap, rng, envDir, envPdf);
 
-        if (visible) {
-            // Calculate PBR BRDF for direct light
-            glm::vec3 h = glm::normalize(wi + wo);
-            float NdotL = fmaxf(0.0f, glm::dot(normal, wi));
-            float NdotV = fmaxf(0.0f, glm::dot(normal, wo));
-            float NdotH = fmaxf(0.0f, glm::dot(normal, h));
-            float VdotH = fmaxf(0.0f, glm::dot(wo, h));
+        float NdotL = glm::dot(normal, envDir);
 
-            // Calculate BRDF components
-            float D = GGX_D(normal, h, roughness);
-            float G = GGX_G(normal, wo, wi, roughness);
-            glm::vec3 F = fresnelSchlick(VdotH, F0);
+        if (NdotL > 0.0f) {
+            // Shadow test for environment
+            Ray shadowRay;
+            shadowRay.origin = intersectionPoint + normal * 0.001f;
+            shadowRay.direction = envDir;
 
-            // Cook-Torrance BRDF
-            glm::vec3 numerator = D * G * F;
-            float denominator = 4.0f * NdotV * NdotL;
-            glm::vec3 specular = numerator / fmaxf(0.001f, denominator);
+            bool visible = true;
+            for (int i = 0; i < num_geoms && visible; i++) {
+                glm::vec3 tmp_i, tmp_n;
+                bool tmp_o;
+                float t = -1.0f;
 
-            // Diffuse component (only for dielectrics)
-            glm::vec3 kS = F; // Specular contribution
-            glm::vec3 kD = glm::vec3(1.0f) - kS; // Diffuse contribution
-            kD *= 1.0f - metallic; // Metals have no diffuse
+                if (geoms[i].type == CUBE)
+                    t = boxIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
+                else if (geoms[i].type == SPHERE)
+                    t = sphereIntersectionTest(geoms[i], shadowRay, tmp_i, tmp_n, tmp_o);
+                else if (geoms[i].type == GLTF_MESH) {
+                    glm::vec2 tmp_uv;
+                    int tmp_material_id;
+                    t = meshIntersectionTestBVH(
+                        geoms[i], triangles,
+                        bvhNodes[geoms[i].bvhIndex],
+                        bvhTriangleIndices[geoms[i].bvhIndex],
+                        shadowRay,
+                        tmp_i, tmp_n, tmp_o,
+                        tmp_uv, tmp_material_id
+                    );
+                }
 
-            glm::vec3 diffuse = kD * albedo / PI;
+                visible = (t < 0.001f);
+            }
 
-            // Combine diffuse and specular
-            glm::vec3 brdf = diffuse + specular;
+            if (visible) {
+                // Calculate PBR BRDF for environment light
+                glm::vec3 h = glm::normalize(envDir + wo);
+                float NdotV = fmaxf(0.0f, glm::dot(normal, wo));
+                float NdotH = fmaxf(0.0f, glm::dot(normal, h));
+                float VdotH = fmaxf(0.0f, glm::dot(wo, h));
 
+                float D = GGX_D(normal, h, roughness);
+                float G = GGX_G(normal, wo, envDir, roughness);
+                glm::vec3 F = fresnelSchlick(VdotH, F0);
 
-            // Add light contribution
-            Material& lightMat = materials[lightGeom.materialid];
-            directLight += brdf * lightMat.color * lightMat.emittance * NdotL / (distToLight * distToLight);
+                // Cook-Torrance BRDF
+                glm::vec3 numerator = D * G * F;
+                float denominator = 4.0f * NdotV * NdotL;
+                glm::vec3 specular = numerator / fmaxf(0.001f, denominator);
+
+                glm::vec3 kS = F;
+                glm::vec3 kD = glm::vec3(1.0f) - kS;
+                kD *= 1.0f - metallic;
+
+                glm::vec3 diffuse = kD * albedo / PI;
+                glm::vec3 brdf = diffuse + specular;
+
+                // PDFs for MIS
+                float pdfBRDF = (NdotL / PI) * (1.0f - metallic) + // Diffuse PDF
+                    (D * NdotH / (4.0f * VdotH)) * metallic; // Specular PDF
+
+                // MIS weight
+                float sumPdf = envPdf + pdfBRDF;
+                float weight = envPdf / fmaxf(sumPdf, MIN_PDF);
+
+                // Compensate for strategy selection
+                float strategyProb;
+                if (num_lights > 0 && envMapValid) {
+                    strategyProb = 0.33f; // 3 strategies
+                }
+                else if (envMapValid) {
+                    strategyProb = 0.5f;  // 2 strategies (BRDF + env)
+                }
+                else {
+                    strategyProb = 1.0f;  // Should not reach here
+                }
+
+                directLight += weight * brdf * envColor * NdotL /
+                    (strategyProb * fmaxf(envPdf, MIN_PDF));
+            }
         }
     }
 
-    // Indirect lighting - importance sample the BRDF
+    // Clamp direct lighting contribution
+    directLight = glm::clamp(directLight, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
+
+    // === INDIRECT LIGHTING - IMPORTANCE SAMPLE THE PBR BRDF ===
 
     // Decide between diffuse and specular based on metallic and roughness
-    float specularProbability = 0.5f + 0.5f * metallic; // More likely to sample specular for metals
+    float specularProbability = 0.5f + 0.5f * metallic;
 
     if (u01(rng) < specularProbability) {
         // Sample specular lobe using GGX importance sampling
         glm::vec3 h = sampleGGX(normal, roughness, rng);
         glm::vec3 wi = glm::reflect(-wo, h);
 
-        // Make sure the sampled direction is in the hemisphere
         if (glm::dot(wi, normal) > 0.0f) {
             float NdotL = glm::dot(normal, wi);
             float NdotV = fmaxf(0.0f, glm::dot(normal, wo));
             float VdotH = fmaxf(0.0f, glm::dot(wo, h));
 
-            // Calculate Fresnel
             glm::vec3 F = fresnelSchlick(VdotH, F0);
-
-            // For metals, multiply by albedo; for dielectrics, use white
             glm::vec3 specColor = glm::mix(glm::vec3(1.0f), albedo, metallic);
 
             // Weight by fresnel and compensate for probability
-            pathSegment.color *= specColor * F / specularProbability;
+            pathSegment.color *= (specColor * F / specularProbability) + directLight;
 
-            // Set up new ray
             pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
             pathSegment.ray.direction = wi;
             pathSegment.prevIsSpecular = true;
@@ -1930,14 +2079,11 @@ __device__ void shadePBR(
         // Sample diffuse lobe (only for non-metals)
         if (metallic < 1.0f) {
             glm::vec3 wi = calculateRandomDirectionInHemisphere(normal, rng);
-
-            // Diffuse contribution
             glm::vec3 diffuseColor = albedo * (1.0f - metallic);
 
             // Compensate for probability
-            pathSegment.color *= diffuseColor / (1.0f - specularProbability);
+            pathSegment.color *= (diffuseColor / (1.0f - specularProbability)) + directLight;
 
-            // Set up new ray
             pathSegment.ray.origin = intersectionPoint + normal * 0.001f;
             pathSegment.ray.direction = wi;
             pathSegment.prevIsSpecular = false;
@@ -1949,12 +2095,8 @@ __device__ void shadePBR(
         }
     }
 
-    // Add direct lighting contribution
-    directLight = clamp(directLight, glm::vec3(0.0f), glm::vec3(MAX_CONTRIBUTION));
-    pathSegment.color += directLight;
+    pathSegment.remainingBounces--;
 }
-
-
 
 __device__ void shadeDiffuseMIS(
     PathSegment& pathSegment,
@@ -2317,13 +2459,13 @@ __global__ void shadeMaterialMIS(
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
     Material* materials,
-    GPUTexture* textures,    // ADD THIS
-    int num_textures,        // ADD THIS
+    GPUTexture* textures,    
+    int num_textures,       
     Geom* geoms,
     int num_geoms,
     Triangle* triangles,
-    BVHNode** bvhNodes,        // Array of BVH node pointers
-    int** bvhTriangleIndices,  // Array of triangle index pointers
+    BVHNode** bvhNodes,      
+    int** bvhTriangleIndices,  
     LightInfo* lights,
     int num_lights,
     EnvironmentMap envMap,
@@ -2446,7 +2588,7 @@ __global__ void shadeMaterialMIS(
             pathSegments[idx].prevIsSpecular = (material.roughness < 0.1f && material.metallic > 0.5f);
 
             shadePBR(pathSegments[idx], intersection, material, materialColor,
-                textureAlpha,  // Pass texture alpha
+                textureAlpha, 
                 geoms, 
                 num_geoms, 
                 triangles,

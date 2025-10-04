@@ -61,7 +61,7 @@
     },
     "EnvironmentMap":
     {
-        "FILE":"../envmaps/Footprint_Court_2k.hdr",
+        "FILE":"../envmaps/interior_atelier_soft_daylight.hdr",
         "INTENSITY":1.0
     },
     "Objects": [
