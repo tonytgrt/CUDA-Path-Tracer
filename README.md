@@ -5,12 +5,18 @@ CUDA Path Tracer
 
 * Yiding Tian
   *  [LinkedIn](https://linkedin.com/in/ytian1109), [Github](https://github.com/tonytgrt)
-* Tested on: Windows 11 24H2, i9-13900H @ 4.1GHz, 32GB RAM @ 4800Mhz, MSI Shadow RTX 5080 @ 3000MHz 16GB VRAM @ 15801MHz Driver 581.15, Personal Laptop with External Desktop GPU via NVMe connector (PCIe 4.0 x4 Protocol)
+* Tested on: Windows 11 24H2, i9-13900H @ 4.1GHz, 32GB RAM, MSI Shadow RTX 5080 16GB Driver 581.15, Personal Laptop with External Desktop GPU via NVMe connector (PCIe 4.0 x4 Protocol)
 
 ## Project Overview
 ![](/img/thumb-0.png)
 
+## Core Features Completed
 
+## Extended Features Implemented
+
+## Third-party Libraries Used
+
+## Performance Analysis
 
 ## WIP Renders
 

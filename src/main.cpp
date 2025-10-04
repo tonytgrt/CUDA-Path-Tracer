@@ -494,10 +494,10 @@ void RenderImGui()
         iteration = 0;
     }
 
-    ImGui::Text("   Position    Look At    Up Vector");
-    ImGui::Text("X: %.2f        %.2f       %.2f", cameraPosition.x, cam.lookAt.x, cam.up.x);
-    ImGui::Text("Y: %.2f        %.2f       %.2f", cameraPosition.y, cam.lookAt.y, cam.up.y);
-    ImGui::Text("Z: %.2f        %.2f       %.2f", cameraPosition.z, cam.lookAt.z, cam.up.z);
+    ImGui::Text("   Position     Look At     Up Vector");
+    ImGui::Text("X: %.2f         %.2f        %.2f", cameraPosition.x, cam.lookAt.x, cam.up.x);
+    ImGui::Text("Y: %.2f         %.2f        %.2f", cameraPosition.y, cam.lookAt.y, cam.up.y);
+    ImGui::Text("Z: %.2f         %.2f        %.2f", cameraPosition.z, cam.lookAt.z, cam.up.z);
 
 
     ImGui::Spacing();
@@ -533,34 +533,6 @@ void RenderImGui()
     if (ImGui::Button("Save Image", ImVec2(-1, 30))) {
         saveImage();
         ImGui::OpenPopup("Image Saved");
-    }
-
-    // Image saved popup
-    if (ImGui::BeginPopupModal("Image Saved", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Image saved successfully!");
-        ImGui::Separator();
-        ImGui::Text("File: %s", renderState->imageName.c_str());
-        ImGui::Spacing();
-        if (ImGui::Button("OK", ImVec2(120, 0))) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    // Instructions (collapsible)
-    ImGui::Spacing();
-    ImGui::Separator();
-    if (ImGui::CollapsingHeader("Keyboard & Mouse Controls")) {
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Keyboard:");
-        ImGui::BulletText("[S] Save Image");
-        ImGui::BulletText("[Space] Reset Camera");
-        ImGui::BulletText("[Esc] Save & Exit");
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Mouse:");
-        ImGui::BulletText("[LMB Drag] Rotate Camera");
-        ImGui::BulletText("[Scroll] Zoom In/Out");
-        ImGui::BulletText("[RMB Drag] Alternative Zoom");
-        ImGui::BulletText("[MMB Drag] Pan Camera");
     }
 
     if (ImGui::CollapsingHeader("OptiX Denoiser", ImGuiTreeNodeFlags_DefaultOpen))
@@ -624,13 +596,6 @@ void RenderImGui()
                 ImGui::SetTooltip("Start denoising after this many iterations");
             }
 
-            ImGui::SliderInt("Frequency", &DENOISE_FREQUENCY, 1, 10);
-            ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Apply denoiser every N iterations");
-            }
-
             if (g_denoiser) {
                 float blendFactor = g_denoiser->getBlendFactor();
                 if (ImGui::SliderFloat("Blend Factor", &blendFactor, 0.0f, 1.0f, "%.2f")) {
@@ -678,6 +643,22 @@ void RenderImGui()
 
             ImGui::Unindent();
         }
+    }
+
+    // Instructions (collapsible)
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Keyboard & Mouse Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Keyboard:");
+        ImGui::BulletText("[S] Save Image");
+        ImGui::BulletText("[Space] Reset Camera");
+        ImGui::BulletText("[Esc] Save & Exit");
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Mouse:");
+        ImGui::BulletText("[LMB Drag] Rotate Camera");
+        ImGui::BulletText("[Scroll] Zoom In/Out");
+        ImGui::BulletText("[RMB Drag] Move Camera");
+        ImGui::BulletText("[MMB Drag] Pan Camera");
     }
 
     ImGui::End();
