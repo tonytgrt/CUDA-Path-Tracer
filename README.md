@@ -50,5 +50,9 @@ Previosuly without BVH, it renders with 18000ms frametime. This render has only 
 
 ## Bloopers
 
+### The Evil Dragon
+A bug with subsurface scattering and meshes
+![](/img/blooper-2.png)
+
 ### MIS Fireflies
 ![](/img/blooper-1.png)

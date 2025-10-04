@@ -102,7 +102,7 @@
             "METALLIC": 0.0,
             "TRANSPARENCY": 0.2,
             "IOR": 1.35,
-            "SUBSURFACE_ENABLED": 1,
+            "SUBSURFACE_ENABLED": 0,
             "SUBSURFACE_COLOR": [0.95, 0.93, 0.88],
             "SUBSURFACE_RADIUS": [0.10, 0.08, 0.05],
             "SUBSURFACE_SCALE": 3.0,
@@ -119,11 +119,6 @@
         "EYE":[0.0,6.5,5.90],
         "LOOKAT":[0.0,6.5,0.0],
         "UP":[0.0,1.0,0.0]
-    },
-    "EnvironmentMap":
-    {
-        "FILE":"../envmaps/interior_atelier_soft_daylight.hdr",
-        "INTENSITY":1.0
     },
     "Objects":
     [
@@ -150,7 +145,7 @@
         },
         {
             "TYPE":"cube",
-            "MATERIAL":"specular_white",
+            "MATERIAL":"diffuse_white",
             "TRANS":[0.0,5.0,-5.0],
             "ROTAT":[0.0,90.0,0.0],
             "SCALE":[0.01,10.0,10.0]

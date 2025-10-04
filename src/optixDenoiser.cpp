@@ -99,9 +99,9 @@ void OptiXDenoiser::init(unsigned int width, unsigned int height, bool useNormal
     }
 
     m_initialized = true;
-    std::cout << "OptiX Denoiser initialized for " << width << "x" << height
-        << " images (Normals: " << (useNormals ? "ON" : "OFF")
-        << ", Albedo: " << (useAlbedo ? "ON" : "OFF") << ")" << std::endl;
+    //std::cout << "OptiX Denoiser initialized for " << width << "x" << height
+    //    << " images (Normals: " << (useNormals ? "ON" : "OFF")
+    //    << ", Albedo: " << (useAlbedo ? "ON" : "OFF") << ")" << std::endl;
 }
 
 void OptiXDenoiser::convertFloat3ToFloat4(void* src, CUdeviceptr dst, unsigned int numPixels)

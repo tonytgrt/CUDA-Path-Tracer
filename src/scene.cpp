@@ -4,8 +4,8 @@
 
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtx/string_cast.hpp>
-#include <glm/gtc/quaternion.hpp>        // For quaternion support
-#include <glm/gtx/quaternion.hpp>        // For glm::mat4_cast
+#include <glm/gtc/quaternion.hpp>       
+#include <glm/gtx/quaternion.hpp>        
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "json.hpp"
@@ -233,7 +233,6 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     // Clear the texture mapping for this model
     gltfTextureToSceneTexture.clear();
 
-    // Step 1: Load all textures FIRST (before materials)
     std::unordered_map<int, int> localTextureMapping;
     cout << "\n--- Loading Textures ---" << endl;
     for (size_t i = 0; i < model.textures.size(); ++i) {
@@ -242,7 +241,6 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
     }
     cout << "Total textures loaded: " << localTextureMapping.size() << endl;
 
-    // Step 2: Load all materials (using the texture mapping)
     int materialOffset = materials.size();
     std::vector<int> gltfMaterialToSceneMaterial;
 
@@ -422,7 +420,6 @@ void Scene::loadGLTFModel(const std::string& gltfPath, Geom& newGeom,
                                 glm::vec3 localV1 = glm::vec3(positions[idx[1] * 3], positions[idx[1] * 3 + 1], positions[idx[1] * 3 + 2]);
                                 glm::vec3 localV2 = glm::vec3(positions[idx[2] * 3], positions[idx[2] * 3 + 1], positions[idx[2] * 3 + 2]);
 
-                                // CRITICAL FIX: Transform vertices by the combined node transform
                                 tri.v0 = glm::vec3(nodeTransform * glm::vec4(localV0, 1.0f));
                                 tri.v1 = glm::vec3(nodeTransform * glm::vec4(localV1, 1.0f));
                                 tri.v2 = glm::vec3(nodeTransform * glm::vec4(localV2, 1.0f));
@@ -720,11 +717,9 @@ void Scene::loadFromJSON(const std::string& jsonName)
                         newMaterial.subsurfaceAnisotropy = 0.0f;
                     }
 
-                    // Backwards compatibility: single radius value
                     if (p.contains("SUBSURFACE_RADIUS_SINGLE")) {
                         float radius = p["SUBSURFACE_RADIUS_SINGLE"];
                         newMaterial.subsurfaceRadius = radius;
-                        // If not specified separately, use this for RGB channels
                         if (!p.contains("SUBSURFACE_RADIUS")) {
                             newMaterial.subsurfaceRadiusRGB = glm::vec3(radius);
                         }

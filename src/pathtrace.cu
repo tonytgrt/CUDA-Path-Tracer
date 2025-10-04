@@ -53,7 +53,6 @@ struct is_terminated {
     }
 };
 
-// Kernel for converting float3 to float4 (needed for OptiX)
 __global__ void convertFloat3ToFloat4Kernel(glm::vec3* src, float4* dst, unsigned int numPixels)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -63,7 +62,6 @@ __global__ void convertFloat3ToFloat4Kernel(glm::vec3* src, float4* dst, unsigne
     dst[idx] = make_float4(pixel.x, pixel.y, pixel.z, 1.0f);
 }
 
-// Kernel for converting float4 to float3
 __global__ void convertFloat4ToFloat3Kernel(float4* src, glm::vec3* dst, unsigned int numPixels)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -73,7 +71,6 @@ __global__ void convertFloat4ToFloat3Kernel(float4* src, glm::vec3* dst, unsigne
     dst[idx] = glm::vec3(pixel.x, pixel.y, pixel.z);
 }
 
-// Launcher functions callable from C++ (extern "C" for linking)
 extern "C" void launchConvertFloat3ToFloat4(
     glm::vec3* src, float4* dst, unsigned int numPixels)
 {
@@ -94,7 +91,6 @@ extern "C" void launchConvertFloat4ToFloat3(
     cudaDeviceSynchronize();
 }
 
-// ===== ALSO ADD: Kernel to capture normals and albedo =====
 __global__ void captureNormalsAndAlbedo(
     int num_paths,
     PathSegment* paths,
@@ -146,7 +142,6 @@ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int de
     return thrust::default_random_engine(h);
 }
 
-//Kernel that writes the image to the OpenGL PBO directly.
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* image)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -450,7 +445,6 @@ void pathtraceInit(Scene* scene)
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
     // TODO: initialize any extra device memeory you need
-    // Initialize environment map
     dev_environmentMap.enabled = scene->environmentMap.enabled;
     dev_environmentMap.width = scene->environmentMap.width;
     dev_environmentMap.height = scene->environmentMap.height;
@@ -482,7 +476,6 @@ void pathtraceInit(Scene* scene)
     }
 
     if (total_triangles > 0) {
-        // Allocate triangle buffer on GPU
         cudaMalloc(&dev_triangles, total_triangles * sizeof(Triangle));
 
         // Copy triangles to GPU
@@ -509,7 +502,6 @@ void pathtraceInit(Scene* scene)
     // Upload textures to GPU
     num_textures = scene->textures.size();
     if (num_textures > 0) {
-        // Allocate array of GPUTexture structures
         cudaMalloc(&dev_textures, num_textures * sizeof(GPUTexture));
 
         // Create temporary array to hold GPU texture info
@@ -570,7 +562,7 @@ void pathtraceInit(Scene* scene)
             g_denoiser = new OptiXDenoiser();
             g_denoiser->init(cam.resolution.x, cam.resolution.y,
                 DENOISE_WITH_NORMALS, DENOISE_WITH_ALBEDO);
-            std::cout << "OptiX Denoiser initialized" << std::endl;
+            //std::cout << "OptiX Denoiser initialized" << std::endl;
         }
     }
     
@@ -1892,6 +1884,168 @@ __device__ void shadePBRWithSSS(
     pathSegment.remainingBounces--;
 }
 
+__device__ glm::vec3 evaluateDipoleProfile(
+    float r,  // distance
+    const glm::vec3& sigma_a,  // absorption
+    const glm::vec3& sigma_s_prime  // reduced scattering
+) {
+    glm::vec3 sigma_t_prime = sigma_a + sigma_s_prime;
+    glm::vec3 sigma_tr = glm::sqrt(3.0f * sigma_a * sigma_t_prime);
+
+    glm::vec3 z_r = glm::vec3(1.0f) / sigma_t_prime;
+    glm::vec3 z_v = z_r * (1.0f + 4.0f / 3.0f * glm::vec3(1.44f));  // A=1.44 for IOR~1.3
+
+    glm::vec3 d_r = glm::sqrt(z_r * z_r + r * r);
+    glm::vec3 d_v = glm::sqrt(z_v * z_v + r * r);
+
+    glm::vec3 C_phi = glm::vec3(0.25f) / PI;
+
+    glm::vec3 result = C_phi * (
+        z_r * (sigma_tr + glm::vec3(1.0f) / d_r) * glm::exp(-sigma_tr * d_r) / (d_r * d_r) +
+        z_v * (sigma_tr + glm::vec3(1.0f) / d_v) * glm::exp(-sigma_tr * d_v) / (d_v * d_v)
+        );
+
+    return result;
+}
+
+// Convert material parameters to absorption/scattering coefficients
+__device__ void computeSSCoefficients(
+    const Material& material,
+    glm::vec3& sigma_a,
+    glm::vec3& sigma_s_prime
+) {
+    // Convert subsurface color to absorption (darker = more absorption)
+    glm::vec3 A = material.subsurfaceColor;
+
+    // Approximate mapping from albedo to scattering/absorption
+    sigma_s_prime = glm::vec3(1.0f) / (material.subsurfaceRadiusRGB * material.subsurfaceScale + glm::vec3(0.001f));
+
+    // Use subsurface color to modulate absorption
+    sigma_a = sigma_s_prime * (glm::vec3(1.0f) - A) * 0.1f;
+}
+
+// Sample a point inside the medium for SSS
+__device__ glm::vec3 sampleSSExitPoint(
+    const glm::vec3& entryPoint,
+    const glm::vec3& normal,
+    const Material& material,
+    thrust::default_random_engine& rng
+) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    // Use importance sampling based on the mean free path
+    float avgRadius = (material.subsurfaceRadiusRGB.x +
+        material.subsurfaceRadiusRGB.y +
+        material.subsurfaceRadiusRGB.z) / 3.0f;
+    avgRadius *= material.subsurfaceScale;
+
+    // Sample distance using exponential distribution
+    float distance = -logf(1.0f - u01(rng) * 0.99f) * avgRadius;
+    distance = fminf(distance, avgRadius * 10.0f);  // Clamp maximum
+
+    // Sample direction in hemisphere below surface
+    float theta = 2.0f * PI * u01(rng);
+    float phi = acosf(1.0f - u01(rng));  // Hemisphere sampling
+
+    glm::vec3 localDir = glm::vec3(
+        sinf(phi) * cosf(theta),
+        sinf(phi) * sinf(theta),
+        -cosf(phi)  // Pointing into the surface
+    );
+
+    // Build tangent space
+    glm::vec3 tangent = (fabs(normal.x) > fabs(normal.y)) ?
+        glm::normalize(glm::vec3(-normal.z, 0, normal.x)) :
+        glm::normalize(glm::vec3(0, -normal.z, normal.y));
+    glm::vec3 bitangent = glm::cross(normal, tangent);
+
+    // Transform to world space
+    glm::vec3 worldDir = tangent * localDir.x + bitangent * localDir.y - normal * localDir.z;
+
+    return entryPoint + worldDir * distance;
+}
+
+__device__ bool sampleSubsurfaceScatteringPath(
+    PathSegment& pathSegment,
+    const glm::vec3& intersectionPoint,
+    const glm::vec3& normal,
+    const Material& material,
+    const glm::vec3& materialColor,
+    thrust::default_random_engine& rng
+) {
+    // Only apply to non-metallic materials with SSS enabled
+    if (material.subsurfaceEnabled == 0 || material.metallic > 0.5f) {
+        return false;
+    }
+
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    // Probability of taking SSS path based on material properties
+    float sssProb = 0.5f * (1.0f - material.metallic) *
+        fminf(material.subsurfaceScale, 1.0f);
+
+    if (u01(rng) > sssProb) {
+        return false;  // Don't take SSS path
+    }
+
+    // === SAMPLE EXIT POINT ===
+    glm::vec3 exitPoint = sampleSSExitPoint(intersectionPoint, normal, material, rng);
+    float distance = glm::length(exitPoint - intersectionPoint);
+
+    // === EVALUATE BSSRDF ===
+    glm::vec3 sigma_a, sigma_s_prime;
+    computeSSCoefficients(material, sigma_a, sigma_s_prime);
+
+    // Use dipole model for more realistic appearance
+    glm::vec3 bssrdf = evaluateDipoleProfile(distance, sigma_a, sigma_s_prime);
+
+    // === APPLY TRANSMISSION THROUGH MEDIUM ===
+    // Beer-Lambert law for absorption through medium
+    glm::vec3 transmittance = glm::exp(-sigma_a * distance);
+
+    // Combine BSSRDF with transmittance and material color
+    glm::vec3 throughput = bssrdf * transmittance * material.subsurfaceColor * materialColor;
+
+    // === IMPORTANCE COMPENSATION ===
+    // Compensate for the probability of taking this path
+    throughput /= sssProb;
+
+    // === APPLY TO PATH ===
+    pathSegment.color *= throughput * PI;  // PI factor for energy conservation
+
+    // === SAMPLE NEW DIRECTION ===
+    // Exit direction is diffuse-like
+    glm::vec3 exitNormal = normal;  // Could compute actual surface normal at exit point
+
+    // Sample cosine-weighted hemisphere
+    float r1 = u01(rng);
+    float r2 = u01(rng);
+    float sinTheta = sqrtf(r1);
+    float cosTheta = sqrtf(1.0f - r1);
+    float phi = 2.0f * PI * r2;
+
+    glm::vec3 localDir = glm::vec3(
+        sinTheta * cosf(phi),
+        sinTheta * sinf(phi),
+        cosTheta
+    );
+
+    // Transform to world space
+    glm::vec3 tangent = (fabs(exitNormal.x) > fabs(exitNormal.y)) ?
+        glm::normalize(glm::vec3(-exitNormal.z, 0, exitNormal.x)) :
+        glm::normalize(glm::vec3(0, -exitNormal.z, exitNormal.y));
+    glm::vec3 bitangent = glm::cross(exitNormal, tangent);
+
+    glm::vec3 worldDir = tangent * localDir.x + bitangent * localDir.y + exitNormal * localDir.z;
+
+    // === UPDATE RAY ===
+    pathSegment.ray.origin = exitPoint + exitNormal * 0.001f;
+    pathSegment.ray.direction = glm::normalize(worldDir);
+    pathSegment.remainingBounces--;
+
+    return true;  // SSS path was taken
+}
+
 
 
 // ===== MAIN PBR SHADING FUNCTION =====
@@ -1915,6 +2069,16 @@ __device__ void shadePBR(
     glm::vec3 intersectionPoint = pathSegment.ray.origin +
         pathSegment.ray.direction * intersection.t;
     glm::vec3 normal = intersection.surfaceNormal;
+
+    if (material.subsurfaceEnabled > 0 && material.metallic < 0.5f) {
+        if (sampleSubsurfaceScatteringPath(
+            pathSegment, intersectionPoint, normal,
+            material, texturedColor, rng)) {
+            // SSS path was taken, exit early
+            return;
+        }
+    }
+
     glm::vec3 wo = -pathSegment.ray.direction;
 
     // Material properties
@@ -2053,6 +2217,7 @@ __device__ void shadePBR(
             // Combine diffuse and specular
             glm::vec3 brdf = diffuse + specular;
 
+
             // Add light contribution
             Material& lightMat = materials[lightGeom.materialid];
             directLight += brdf * lightMat.color * lightMat.emittance * NdotL / (distToLight * distToLight);
@@ -2187,9 +2352,51 @@ __device__ void shadeDiffuseMIS(
             float NdotL = glm::dot(normal, wi);
 
             if (NdotL > 0.0f) {
-                // Shadow test (simplified - you should add your shadow testing code)
+                // === SHADOW TEST (SIMPLIFIED) ===
+                Ray shadowRay;
+                shadowRay.origin = intersectionPoint + normal * 0.001f;
+                shadowRay.direction = wi;
+
                 bool visible = true;
-                // ... shadow testing code ...
+
+                // Check all geometry for occlusion
+                for (int geomIdx = 0; geomIdx < num_geoms; geomIdx++) {
+                    // Skip the light source itself
+                    if (geomIdx == lightInfo.geomIdx) continue;
+
+                    Geom& occluder = geoms[geomIdx];
+
+                    glm::vec3 temp_intersect;
+                    glm::vec3 temp_normal;
+                    bool temp_outside;
+                    float t = -1.0f;
+
+                    // Test intersection based on geometry type
+                    if (occluder.type == SPHERE) {
+                        t = sphereIntersectionTest(
+                            occluder,
+                            shadowRay,
+                            temp_intersect,
+                            temp_normal,
+                            temp_outside
+                        );
+                    }
+                    else if (occluder.type == CUBE) {
+                        t = boxIntersectionTest(
+                            occluder,
+                            shadowRay,
+                            temp_intersect,
+                            temp_normal,
+                            temp_outside
+                        );
+                    }
+
+                    // Check if this object blocks the light
+                    if (t > 0.001f && t < dist - 0.001f) {
+                        visible = false;
+                        break;
+                    }
+                }
 
                 if (visible) {
                     // Compute contribution with MIS
@@ -2368,7 +2575,6 @@ __host__ __device__ void shadeRefractive(
 	pathSegment.ray.direction = newDirection;
 }
 
-// Add this kernel to extract material IDs for sorting
 __global__ void extractMaterialIds(
     int num_paths,
     ShadeableIntersection* intersections,
@@ -2385,7 +2591,6 @@ __global__ void extractMaterialIds(
     path_indices[idx] = idx;
 }
 
-// Add this kernel to reorder paths based on sorted indices
 __global__ void reorderByMaterial(
     int num_paths,
     PathSegment* paths_in,
@@ -2533,11 +2738,13 @@ __global__ void shadeMaterialMIS(
             // PBR materials can be both specular and diffuse depending on parameters
             // Consider it specular if it's smooth and metallic
             pathSegments[idx].prevIsSpecular = (material.roughness < 0.1f && material.metallic > 0.5f);
-            //shadePBR(pathSegments[idx], intersection, material, materialColor,
-            //    textureAlpha,  // Pass texture alpha
-            //    geoms, num_geoms, materials, lights, num_lights, envMap, rng);
-            shadePBRWithSSS(pathSegments[idx], intersection, material, materialColor,
-                textureAlpha, geoms, num_geoms, materials, lights, num_lights, envMap, rng);
+
+            shadePBR(pathSegments[idx], intersection, material, materialColor,
+                textureAlpha,  // Pass texture alpha
+                geoms, num_geoms, materials, lights, num_lights, envMap, rng);
+
+            //shadePBRWithSSS(pathSegments[idx], intersection, material, materialColor,
+            //    textureAlpha, geoms, num_geoms, materials, lights, num_lights, envMap, rng);
             break;
 
         default:
@@ -2736,6 +2943,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         }
 #endif
 
+		// Capture auxiliary G-buffers for denoising
         if (USE_DENOISER && depth == 0) {  // Only on first bounce
             dim3 captureBlocks = (num_paths + blockSize1d - 1) / blockSize1d;
             captureNormalsAndAlbedo << <captureBlocks, blockSize1d >> > (
