@@ -144,9 +144,6 @@ Implementation in `generateRayFromCamera()`:
 <em>With SSAA (GRID_SIZE = 1024)</em>
 </td>
 </tr>
-</table>
-
-<table>
 <tr>
 <td align="center">
 <img src="img/ssaa-0-zoomed.png" width="500"/>
