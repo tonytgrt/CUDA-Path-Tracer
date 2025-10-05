@@ -113,7 +113,7 @@
     {
         "RES":[1200,1200],
         "FOVY":45.0,
-        "ITERATIONS":5000,
+        "ITERATIONS":1000,
         "DEPTH":8,
         "FILE":"sss",
         "EYE":[0.0,6.5,5.90],

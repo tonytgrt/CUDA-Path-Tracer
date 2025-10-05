@@ -163,25 +163,214 @@ Implementation in `generateRayFromCamera()`:
 
 ### Specular Shader
 
+Implemented perfect specular (mirror) reflection using the reflection equation. The `shadeSpecular()` function calculates the reflected ray direction based on the incident ray and surface normal, creating realistic mirror surfaces that can reflect the entire scene including other objects and environment maps.
+
 ### Refractive Shader
+
+Full implementation of refractive materials for glass and transparent objects with physically accurate light bending. Features include:
+- Snell's law refraction with configurable index of refraction (IOR)
+- Fresnel effects using Schlick's approximation for realistic reflectance at different angles
+- Total internal reflection handling for rays traveling from dense to less dense media
+- Proper handling of rays entering and exiting refractive objects
+
+The `shadeRefractive()` function determines whether to reflect or refract based on Fresnel equations, creating realistic glass and water effects.
+
+#### Cornell Box with Refractive, Specular, and Diffuse objects
+![](img/refractive.png)
 
 ### PBR Shader
 
+Comprehensive Physically Based Rendering implementation using the metallic-roughness workflow. The `shadePBR()` function implements:
+- Cook-Torrance BRDF with GGX/Trowbridge-Reitz distribution
+- Smith's geometry function for masking and shadowing
+- Fresnel term using Schlick's approximation
+- Support for metallic (0-1) and roughness (0-1) parameters
+- Transparency support with proper alpha blending
+- Energy conservation between diffuse and specular components
+
+Materials can smoothly transition from dielectric to metallic and from rough to smooth surfaces.
+
+#### PBR Example with different materials
+
+![](img/pbr.png)
+
+
 ### MIS for Diffuse and PBR Shader
+
+Multiple Importance Sampling implementation that combines three sampling strategies:
+1. **Light Sampling**: Direct sampling of area lights
+2. **BRDF Sampling**: Importance sampling based on material properties
+3. **Environment Map Sampling**: Sampling bright regions of HDR environment maps
+
+The implementation uses power heuristics to optimally weight contributions from different sampling strategies, significantly reducing variance and improving convergence speed. Both `shadeDiffuseMIS()` and the `shadePBR()` utilize MIS for direct lighting calculations.
+
+<table>
+<tr>
+<td align="center">
+<img src="img/thumb-0.png" width="500"/>
+<br>
+<em>shadePBR With MIS</em>
+</td>
+<td align="center">
+<img src="img/wip-11.png" width="500"/>
+<br>
+<em>shadePBR Without MIS</em>
+</td>
+</tr>
+</table>
 
 ### Subsurface Scattering for PBR Shader
 
-### Russian Roullete ray termination
+Implemented diffusion-based subsurface scattering for realistic rendering of translucent materials like jade, milk, wax, and skin. Features include:
+- Configurable scattering radius and color per RGB channel
+- Anisotropy control for directional scattering
+- Distance-based attenuation using diffusion profiles
+- Integration with PBR materials for combined surface and volume effects
+
+The implementation simulates light penetrating the surface, scattering within the material, and exiting at different points, creating soft, translucent appearance.
+
+<table>
+<tr>
+<td align="center">
+<img src="img/sss-0.png" width="500"/>
+<br>
+<em>Subsurface Scattering Off</em>
+</td>
+<td align="center">
+<img src="img/sss-1.png" width="500"/>
+<br>
+<em>Subsurface Scattering On</em>
+</td>
+</tr>
+</table>
+
+### Russian Roulette ray termination
+
+Probabilistic path termination that maintains unbiased results while improving performance. Implementation details:
+- Begins after configurable bounce depth (`RR_START_BOUNCE = 3`)
+- Survival probability based on path throughput (luminance)
+- Minimum and maximum survival probability bounds to prevent bias
+- Energy compensation by dividing surviving paths by survival probability
+
+This significantly reduces computation for dim rays that contribute little to the final image.
+
+<table>
+<tr>
+<td align="center">
+<img src="img/rr-1.png" width="500"/>
+<br>
+<em>Trace Depth 32 With Russian Roulette (56ms frametime)</em>
+</td>
+<td align="center">
+<img src="img/rr-0.png" width="500"/>
+<br>
+<em>Trace Depth 32 Without Russian Roulette (63ms frametime)</em>
+</td>
+</tr>
+</table>
+
 
 ### Environment Maps
 
+Full HDR environment map support for image-based lighting:
+- HDR image loading with proper tone mapping
+- Spherical mapping from direction vectors to texture coordinates
+- Configurable intensity control
+- Importance sampling with precomputed CDFs for efficient sampling
+- Integration with MIS for balanced direct and indirect lighting
+
+<table>
+<tr>
+<td align="center">
+<img src="img/envmap-0.png" width="500"/>
+<br>
+<em>Interior environment with sunlight on the left</em>
+</td>
+<td align="center">
+<img src="img/envmap-1.png" width="500"/>
+<br>
+<em>Exterior environment with sunlight on the right</em>
+</td>
+</tr>
+</table>
+
+
 ### GLTF Models with tinyGLTF
+
+Comprehensive GLTF 2.0 model loading using the TinyGLTF library:
+- Support for both `.gltf` (JSON) and `.glb` (binary) formats
+- Triangle mesh extraction with automatic primitive assembly
+- Material loading including PBR metallic-roughness workflow
+- Texture loading for base color, normal, metallic-roughness maps
+- Proper UV coordinate mapping
+- Transformation matrix support for model positioning
+
+#### Stanford Dragon GLTF Model, 134995 Triangles
+![](img/dragon.png)
 
 ### BVH Data Structure
 
+Bounding Volume Hierarchy implementation for efficient ray-triangle intersection:
+- SAH (Surface Area Heuristic) based construction for optimal tree quality
+- CPU-side tree building with GPU-friendly memory layout
+- Iterative GPU traversal using stack-based approach
+- Configurable maximum tree depth (`BVH_MAX_TREE_DEPTH`)
+- Dramatic performance improvement: 100x+ speedup for million+ triangle scenes
+
+<table>
+<tr>
+<td align="center">
+<img src="img/bvh-1.png" width="500"/>
+<br>
+<em>1.5M Model with BVH (271ms frametime)</em>
+</td>
+<td align="center">
+<img src="img/bvh-0.png" width="500"/>
+<br>
+<em>1.5M Model without BVH (33494ms frametime)</em>
+</td>
+</tr>
+</table>
+
+
 ### Nvidia OptiX Denoiser
 
+Integration with OptiX 9.0 AI denoiser for real-time noise reduction:
+- Beauty buffer denoising with optional guide layers
+- Normal buffer guide for edge preservation
+- Albedo buffer guide for texture detail preservation
+- Configurable blend factor for artistic control
+- Real-time parameter adjustment through ImGui
+- Automatic denoising at configurable intervals
+
+The denoiser dramatically reduces required sample count, enabling preview-quality images in seconds rather than minutes.
+
+<table>
+<tr>
+<td align="center">
+<img src="img/denoiser-50s-1.png" width="500"/>
+<br>
+<em>50 Iterations with Denoiser</em>
+</td>
+<td align="center">
+<img src="img/denoiser-50s-0.png" width="500"/>
+<br>
+<em>50 Iterations without Denoiser</em>
+</td>
+</tr>
+</table>
+
 ### ImGUI and controls improvements
+
+Enhanced user interface with comprehensive debugging and control features:
+- **Real-time Statistics**: FPS, rays/second, iteration count, active ray monitoring
+- **Camera Controls**: Interactive orbit, pan, zoom with configurable speed
+- **Scene Management**: Hot-reload scene files without restarting
+- **Denoiser Panel**: Live denoising parameter control
+- **Performance Monitoring**: Per-kernel timing display
+- **Image Export**: One-click PNG save functionality
+
+![](img/imgui.png)
 
 
 ## Third-party Libraries Used

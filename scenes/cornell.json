@@ -171,7 +171,7 @@
         },
         {
             "TYPE":"sphere",
-            "MATERIAL":"refractive_white",
+            "MATERIAL":"specular_white",
             "TRANS":[-2.0,3.0,-1.0],
             "ROTAT":[0.0,0.0,0.0],
             "SCALE":[3.0,3.0,3.0]
@@ -185,7 +185,7 @@
         },
         {
             "TYPE":"sphere",
-            "MATERIAL":"milk",
+            "MATERIAL":"refractive_white",
             "TRANS":[0.0,6.0,-1.0],
             "ROTAT":[0.0,0.0,0.0],
             "SCALE":[3.0,3.0,3.0]
