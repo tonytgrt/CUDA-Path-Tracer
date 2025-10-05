@@ -1,11 +1,10 @@
 CUDA Path Tracer
 ================
 
-**University of Pennsylvania, CIS 565: GPU Programming and Architecture, Project 3**
-
 * Yiding Tian
   *  [LinkedIn](https://linkedin.com/in/ytian1109), [Github](https://github.com/tonytgrt)
 * Tested on: Windows 11 24H2, i9-13900H @ 4.1GHz, 32GB RAM, MSI Shadow RTX 5080 16GB Driver 581.15, Personal Laptop with External Desktop GPU via NVMe connector (PCIe 4.0 x4 Protocol)
+* Base code provided by University of Pennsylvania, CIS 5650: GPU Programming and Architecture
 
 ## Project Overview
 A CUDA-based path tracer capable of rendering globally-illuminated images for various custom scenes. 
@@ -18,7 +17,7 @@ A CUDA-based path tracer capable of rendering globally-illuminated images for va
 * Custom environment maps and GLTF models loading with materials/textures/metallic etc.
 * BVH (Bounding Volume Hierachy) data structure that enables rendering complex GLTF models with millions of polygons at a reasonable speed
 * Material sorting, stream compaction, and Russian Roulette ray termination to boost performance
-* Stochastic sampled anti aliasing to produce sharper renders
+* Stochastic sampled anti-aliasing to produce sharper renders
 * Nvidia OptiX Denoiser integration, configurable in real time to enable quick preview and enhance the end result
 * Enhanced ImGUI user interface with detailed real-time statistics monitoring and scenes/camera/denoiser controls
 
@@ -54,11 +53,49 @@ cmake ..
 
 ## Core Features Completed
 
+### Diffuse Shader
+
+### Material Sorting
+
+### Stream compacted ray termination
+
+### Stochastic sampled anti-aliasing
+
+
+
 ## Extended Features Implemented
+
+### Specular Shader
+
+### Refractive Shader
+
+### PBR Shader
+
+### MIS for Diffuse and PBR Shader
+
+### Subsurface Scattering for PBR Shader
+
+### Russian Roullete ray termination
+
+### Environment Maps
+
+### GLTF Models with tinyGLTF
+
+### BVH Data Structure
+
+### Nvidia OptiX Denoiser
+
+### ImGUI and controls improvements
+
 
 ## Third-party Libraries Used
 
+### tinyGLTF
+
+### Nvidia OptiX
+
 ## Performance Analysis
+
 
 ## WIP Renders
 

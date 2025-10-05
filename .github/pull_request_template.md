@@ -8,7 +8,7 @@ Diligently go over the project instructions https://github.com/CIS5650-Fall-2025
 
 ### Repo Link
 
-TODO
+[CUDA-Path-Tracer](https://github.com/tonytgrt/CUDA-Path-Tracer/)
 
 ### Core Features Completed
 
