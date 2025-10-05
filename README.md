@@ -55,12 +55,111 @@ cmake ..
 
 ### Diffuse Shader
 
+The diffuse shader implements physically-based Lambertian reflection using **cosine-weighted hemisphere sampling**. The implementation in `shadeDiffuse()` generates random ray directions that follow the probability distribution of Lambert's cosine law, ensuring unbiased global illumination.
+
+Key implementation details:
+- Uses the `calculateRandomDirectionInHemisphere()` function which generates rays with cosine-weighted distribution
+- The sampled direction is computed in local space and then transformed to world space using an orthonormal basis constructed from the surface normal
+- For pure diffuse surfaces with cosine-weighted sampling, the BRDF and PDF terms cancel out mathematically, simplifying the calculation to just multiplying by the material color
+![](/img/diffuse-orig.png)
+
 ### Material Sorting
+
+Material sorting optimizes GPU performance by grouping rays that interact with the same material type, improving warp coherence and reducing divergence during shading calculations. The implementation uses thrust's efficient parallel sorting algorithms.
+
+Implementation workflow:
+1. After intersection testing, extract material IDs for each ray using the `extractMaterialIds` kernel
+2. Create an index array to track original ray positions
+3. Use `thrust::sort_by_key()` to sort rays by material ID in parallel
+4. Reorder both `PathSegment` and `ShadeableIntersection` arrays based on sorted indices using the `reorderByMaterial` kernel
+5. Swap pointers to use sorted data for shading stage
+
+This feature is toggled via the `MATERIAL_SORTING` preprocessor flag in `pathtrace.h` for easy performance comparison.
+
+<table>
+<tr>
+<td align="center">
+<img src="img/mat-sort-1.png" width="500"/>
+<br>
+<em>Scene with 18 materials With Material Sorting (266ms frametime)</em>
+</td>
+<td align="center">
+<img src="img/mat-sort-0.png" width="500"/>
+<br>
+<em>Scene with 18 materials Without Material Sorting (280ms frametime)</em>
+</td>
+</tr>
+</table>
+
 
 ### Stream compacted ray termination
 
+Stream compaction efficiently removes terminated rays from the active ray pool, significantly reducing unnecessary computation in later bounces. The implementation uses thrust's parallel algorithms.
+
+The termination and compaction pipeline:
+1. After shading, rays that hit nothing or have exhausted their bounces are marked with `remainingBounces = 0`
+2. The `gatherTerminatedPaths` kernel accumulates color contributions from terminated paths
+3. `thrust::remove_if()` with the `is_terminated()` functor compacts the ray array in parallel
+4. The compacted array size determines the number of active rays for the next bounce
+5. Russian Roulette termination (when enabled) provides additional probabilistic termination based on throughput
+
+The efficiency gain is most pronounced after several bounces when many rays have terminated naturally or hit light sources.
+
+<table>
+<tr>
+<td align="center">
+<img src="img/sc-1.png" width="500"/>
+<br>
+<em>Trace Depth 12 With Stream Compaction (44ms frametime)</em>
+</td>
+<td align="center">
+<img src="img/sc-0.png" width="500"/>
+<br>
+<em>Trace Depth 12 Without Stream Compaction (106ms frametime)</em>
+</td>
+</tr>
+</table>
+
 ### Stochastic sampled anti-aliasing
 
+Implementation in `generateRayFromCamera()`:
+1. Each pixel is subdivided into a 2×2 grid (configurable via `GRID_SIZE`)
+2. Over multiple iterations, the path tracer cycles through different cells in the grid
+3. Within each cell, a random offset is applied using thrust's random number generator
+4. The jittered position is used to generate the camera ray, with coordinates calculated as:
+   - `pixelX = x + jitterX - 0.5` (centered around pixel center)
+   - `pixelY = y + jitterY - 0.5`
+5. Ray direction is computed through the jittered pixel position for sub-pixel sampling
+
+<table>
+<tr>
+<td align="center">
+<img src="img/ssaa-0.png" width="500"/>
+<br>
+<em>Without SSAA (GRID_SIZE = 1)</em>
+</td>
+<td align="center">
+<img src="img/ssaa-1024.png" width="500"/>
+<br>
+<em>With SSAA (GRID_SIZE = 1024)</em>
+</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td align="center">
+<img src="img/ssaa-0-zoomed.png" width="500"/>
+<br>
+<em>Without SSAA Zoomed</em>
+</td>
+<td align="center">
+<img src="img/ssaa-1024-zoomed.png" width="500"/>
+<br>
+<em>With SSAA Zoomed</em>
+</td>
+</tr>
+</table>
 
 
 ## Extended Features Implemented

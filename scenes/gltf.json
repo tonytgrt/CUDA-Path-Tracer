@@ -21,7 +21,7 @@
     "Camera": {
         "RES": [1200, 1200],
         "FOVY": 45.0,
-        "ITERATIONS": 5000,
+        "ITERATIONS": 1000,
         "DEPTH": 8,
         "FILE": "gltf",
         "EYE": [0.0, 5.0, 10.5],
