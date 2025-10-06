@@ -404,17 +404,92 @@ Enhanced user interface with comprehensive debugging and control features:
 
 ![](img/sc-gr.png)
 
+**Analysis**: Stream compaction demonstrates significant performance improvements that scale with trace depth. The data shows frame time measurements (in milliseconds) comparing performance with and without stream compaction across various trace depths.
+
+Performance measurements:
+- **Depth 4**: 26ms with SC vs 29ms without (10% improvement)
+- **Depth 8**: 32ms with SC vs 42ms without (24% improvement)
+- **Depth 12**: 34ms with SC vs 57ms without (40% improvement)
+- **Depth 16**: 34ms with SC vs 68ms without (50% improvement)
+- **Depth 24**: 37ms with SC vs 94ms without (61% improvement)
+- **Depth 32**: 39ms with SC vs 118ms without (67% improvement)
+
+Key observations:
+- Stream compaction becomes increasingly effective at higher bounce depths
+- Performance improvement scales from 10% at shallow depths to 67% at depth 32
+- Frame time with stream compaction plateaus around 34-39ms regardless of depth
+- Without stream compaction, frame time increases linearly with depth
+
+The data confirms that stream compaction is essential for production-quality renders with high bounce counts, preventing the linear performance degradation that would otherwise occur.
+
+
 ### Material Sort
 
 ![](img/mat-sort-g.png)
+
+**Analysis**: Material sorting shows mixed results depending on scene complexity and material diversity. The data reveals that material sorting can actually decrease performance in some cases due to sorting overhead.
+
+Performance measurements by scene:
+- **Duck (3 materials, 4K triangles)**: 17ms with sorting vs 15ms without (-11.8% slower)
+- **Dragon (6 materials, 134K triangles)**: 42ms with sorting vs 41ms without (-2.4% slower)
+- **Halo (13 materials, 42K triangles)**: 29ms with sorting vs 28ms without (-3.4% slower)
+- **Porsche (16 materials, 241K triangles)**: 26ms with sorting vs 22ms without (-15.4% slower)
+- **Challenger (23 materials, 196K triangles)**: 27ms with sorting vs 23ms without (-14.8% slower)
+- **Chess (18 materials, 1.5M triangles)**: 267ms with sorting vs 278ms without (4.1% faster)
+
+Key insights:
+- Material sorting only benefits extremely complex scenes (1M+ triangles)
+- For most scenes, the overhead of sorting outweighs coherence benefits
+- Scenes with 15+ materials see worse performance due to sorting complexity
+- The Chess scene (1.5M triangles) is the only one showing improvement
+
+This suggests material sorting should be selectively enabled only for scenes with very high geometric complexity where memory coherence benefits overcome sorting overhead.
+
 
 ### Russian Roulette
 
 ![](img/rr-g.png)
 
+**Analysis**: Russian Roulette termination effectively reduces computation with minimal quality impact. The data compares frame times with RR disabled versus different start depths (measured as fractions of total trace depth).
+
+Performance measurements (in milliseconds):
+- **Depth 8**: 38ms (RR off) → 32ms (RR at depth 4) → 30ms (RR at depth 2)
+- **Depth 12**: 42ms (RR off) → 36ms (RR at depth 6) → 32ms (RR at depth 3)
+- **Depth 16**: 45ms (RR off) → 40ms (RR at depth 8) → 35ms (RR at depth 4)
+- **Depth 24**: 48ms (RR off) → 45ms (RR at depth 12) → 39ms (RR at depth 6)
+- **Depth 32**: 50ms (RR off) → 48ms (RR at depth 16) → 44ms (RR at depth 8)
+
+Performance improvements:
+- RR at 1/2 depth: 6-16% improvement
+- RR at 1/4 depth: 12-24% improvement
+- Earlier RR activation yields better performance but may impact quality
+
+The data shows that starting Russian Roulette at 1/4 of the total trace depth provides optimal balance between performance (19-24% improvement) and visual quality.
+
+
 ### BVH
 
 ![](img/bvh-g.png)
+
+**Analysis**: BVH acceleration provides exponential performance improvements for complex geometry. The data shows frame times (in milliseconds) for various models with different triangle counts.
+
+Performance measurements:
+- **Duck (4K triangles)**: 17ms with BVH vs 70ms without (4.1x speedup)
+- **Halo (42K triangles)**: 30ms with BVH vs 765ms without (25.5x speedup)
+- **Dragon (134K triangles)**: 42ms with BVH vs 2,846ms without (67.8x speedup)
+- **Challenger (196K triangles)**: 27ms with BVH vs 3,023ms without (112x speedup)
+- **Porsche (241K triangles)**: 25ms with BVH vs 3,604ms without (144x speedup)
+- **Chess (1.5M triangles)**: 270ms with BVH vs 43,343ms without (160x speedup)
+
+Key observations:
+- Speedup scales dramatically with triangle count
+- Sub-100K triangles: 4-68x speedup
+- 100K-250K triangles: 112-144x speedup
+- 1M+ triangles: 160x speedup
+- BVH enables real-time preview for models that would otherwise take minutes per frame
+
+The Chess scene exemplifies the dramatic impact: reducing frame time from 43.3 seconds to 270ms, transforming an unusable 0.023 FPS to a workable 3.7 FPS.
+
 
 ## WIP Renders
 
