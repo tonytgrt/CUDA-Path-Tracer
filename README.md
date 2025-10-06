@@ -10,6 +10,7 @@ CUDA Path Tracer
 A CUDA-based path tracer capable of rendering globally-illuminated images for various custom scenes. 
 
 ![](/img/thumb-0.png)
+[Model from Khronos glTF Sample Models](https://github.com/KhronosGroup/glTF-Sample-Models/tree/main/2.0/ABeautifulGame)
 
 ### Feature Highlights
 
@@ -26,12 +27,16 @@ A CUDA-based path tracer capable of rendering globally-illuminated images for va
 ### Galleries
 
 ![](img/dragon.png)
+[Model from Khronos glTF Sample Models](https://github.com/KhronosGroup/glTF-Sample-Models/tree/main/2.0/DragonAttenuation)
 
 ![](img/porsche.png)
+[Model from Lionsharp Studios @ Sketchfab](https://sketchfab.com/3d-models/free-1975-porsche-911-930-turbo-8568d9d14a994b9cae59499f0dbed21e)
 
 ![](img/halo.png)
+[Model from McCarthy3D @ Sketchfab](https://sketchfab.com/3d-models/spartan-armour-mkv-halo-reach-57070b2fd9ff472c8988e76d8c5cbe66)
 
 ![](img/challenger.png)
+[Model from vecarz @ Sketchfab](https://sketchfab.com/3d-models/dodge-challenger-rt-wwwvecarzcom-73b11a33ba8c4a64a7c06ebb0fe7a93a)
 
 ## Build and Run Instructions (Windows)
 
