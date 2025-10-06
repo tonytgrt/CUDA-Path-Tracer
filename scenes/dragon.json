@@ -3,7 +3,7 @@
         "light": {
             "TYPE": "Emitting",
             "RGB": [1.0, 1.0, 1.0],
-            "EMITTANCE": 1.0
+            "EMITTANCE": 5.0
         },
         "diffuse_white":
         {
@@ -21,7 +21,7 @@
     "Camera": {
         "RES": [1200, 1200],
         "FOVY": 45.0,
-        "ITERATIONS": 5000,
+        "ITERATIONS": 1000,
         "DEPTH": 8,
         "FILE": "gltf",
         "EYE": [0.0, 5.0, 10.5],
@@ -30,23 +30,23 @@
     },
     "EnvironmentMap":
     {
-        "FILE":"../envmaps/christmas_photo_studio_07_4k.hdr",
-        "INTENSITY":1.0
+        "FILE":"../envmaps/interior_atelier_soft_daylight.hdr",
+        "INTENSITY":0.6
     },
     "Objects": [
         {
             "TYPE": "cube",
             "MATERIAL": "light",
-            "TRANS": [-9.5, 2.0, 4.0],
-            "ROTAT": [90.0, 0.0, 22.5],
+            "TRANS": [11.71, 10.0, 13.22],
+            "ROTAT": [90.0, 0.0, -45.0],
             "SCALE": [10.0, 0.1, 10.0]
         },
         {
             "TYPE": "gltf",
-            "FILE": "../gltf/challenger.glb",
-            "TRANS": [0.0, 0.0, 0.0],
+            "FILE": "../gltf/DragonAttenuation.glb",
+            "TRANS": [0.0, 1.0, 0.0],
             "ROTAT": [0.0, 0.0, 0.0],
-            "SCALE": [10.0, 10.0, 10.0]
+            "SCALE": [2.0, 2.0, 2.0]
         }
     ]
 }

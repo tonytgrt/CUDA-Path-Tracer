@@ -23,15 +23,15 @@
         "FOVY": 45.0,
         "ITERATIONS": 5000,
         "DEPTH": 8,
-        "FILE": "gltf",
+        "FILE": "911",
         "EYE": [0.0, 5.0, 10.5],
         "LOOKAT": [0.0, 5.0, 0.0],
         "UP": [0.0, 1.0, 0.0]
     },
     "EnvironmentMap":
     {
-        "FILE":"../envmaps/christmas_photo_studio_07_4k.hdr",
-        "INTENSITY":1.0
+        "FILE":"../envmaps/urban_street_04_4k.hdr",
+        "INTENSITY":3.0
     },
     "Objects": [
         {
@@ -43,10 +43,10 @@
         },
         {
             "TYPE": "gltf",
-            "FILE": "../gltf/challenger.glb",
-            "TRANS": [0.0, 0.0, 0.0],
-            "ROTAT": [0.0, 0.0, 0.0],
-            "SCALE": [10.0, 10.0, 10.0]
+            "FILE": "../gltf/911.glb",
+            "TRANS": [-0.3, -0.55, -1.2],
+            "ROTAT": [0.0, 22.5, 0.0],
+            "SCALE": [1.85, 1.85, 1.85]
         }
     ]
 }

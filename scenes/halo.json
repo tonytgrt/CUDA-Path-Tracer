@@ -1,9 +1,14 @@
 {
     "Materials": {
+        "light1": {
+            "TYPE": "Emitting",
+            "RGB": [1.0, 1.0, 1.0],
+            "EMITTANCE": 2.0
+        },
         "light": {
             "TYPE": "Emitting",
             "RGB": [1.0, 1.0, 1.0],
-            "EMITTANCE": 1.0
+            "EMITTANCE": 5.0
         },
         "diffuse_white":
         {
@@ -23,30 +28,37 @@
         "FOVY": 45.0,
         "ITERATIONS": 5000,
         "DEPTH": 8,
-        "FILE": "gltf",
+        "FILE": "halo",
         "EYE": [0.0, 5.0, 10.5],
         "LOOKAT": [0.0, 5.0, 0.0],
         "UP": [0.0, 1.0, 0.0]
     },
     "EnvironmentMap":
     {
-        "FILE":"../envmaps/christmas_photo_studio_07_4k.hdr",
+        "FILE":"../envmaps/lakeside_sunrise_4k.hdr",
         "INTENSITY":1.0
     },
     "Objects": [
         {
             "TYPE": "cube",
-            "MATERIAL": "light",
+            "MATERIAL": "light1",
             "TRANS": [-9.5, 2.0, 4.0],
             "ROTAT": [90.0, 0.0, 22.5],
             "SCALE": [10.0, 0.1, 10.0]
         },
         {
+            "TYPE": "cube",
+            "MATERIAL": "light",
+            "TRANS": [3.39, 4.02, 13.38],
+            "ROTAT": [90.0, 0.0, -22.5],
+            "SCALE": [10.0, 0.1, 10.0]
+        },
+        {
             "TYPE": "gltf",
-            "FILE": "../gltf/challenger.glb",
-            "TRANS": [0.0, 0.0, 0.0],
-            "ROTAT": [0.0, 0.0, 0.0],
-            "SCALE": [10.0, 10.0, 10.0]
+            "FILE": "../gltf/halo.glb",
+            "TRANS": [-0.2, -9.0, -1.0],
+            "ROTAT": [0.0, -10.0, 0.0],
+            "SCALE": [4.3, 4.3, 4.3]
         }
     ]
 }

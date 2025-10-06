@@ -9,6 +9,8 @@ CUDA Path Tracer
 ## Project Overview
 A CUDA-based path tracer capable of rendering globally-illuminated images for various custom scenes. 
 
+![](/img/thumb-0.png)
+
 ### Feature Highlights
 
 * Diffuse, Specular, Refractive, and PBR (Physically Based Rendering) shaders
@@ -21,9 +23,15 @@ A CUDA-based path tracer capable of rendering globally-illuminated images for va
 * Nvidia OptiX Denoiser integration, configurable in real time to enable quick preview and enhance the end result
 * Enhanced ImGUI user interface with detailed real-time statistics monitoring and scenes/camera/denoiser controls
 
-### Thumbnail Render (More to come!)
+### Galleries
 
-![](/img/thumb-0.png)
+![](img/dragon.png)
+
+![](img/porsche.png)
+
+![](img/halo.png)
+
+![](img/challenger.png)
 
 ## Build and Run Instructions (Windows)
 
@@ -322,12 +330,12 @@ Bounding Volume Hierarchy implementation for efficient ray-triangle intersection
 <td align="center">
 <img src="img/bvh-1.png" width="500"/>
 <br>
-<em>1.5M Model with BVH (271ms frametime)</em>
+<em>1.5M Triangles Model with BVH (271ms frametime)</em>
 </td>
 <td align="center">
 <img src="img/bvh-0.png" width="500"/>
 <br>
-<em>1.5M Model without BVH (33494ms frametime)</em>
+<em>1.5M Triangles Model without BVH (33494ms frametime)</em>
 </td>
 </tr>
 </table>
@@ -375,12 +383,38 @@ Enhanced user interface with comprehensive debugging and control features:
 
 ## Third-party Libraries Used
 
-### tinyGLTF
+### [tinyGLTF](https://github.com/syoyo/tinygltf)
 
-### Nvidia OptiX
+**Purpose**: Loading GLTF 2.0 3D models and associated assets  
+**License**: MIT License  
+**Integration**: Header-only library included in `external/include/tiny_gltf.h`  
+**Usage**: Parses GLTF/GLB files to extract meshes, materials, textures, and transformations. Provides comprehensive support for the PBR metallic-roughness workflow standard in GLTF 2.0.
+
+### [Nvidia OptiX](https://developer.nvidia.com/rtx/ray-tracing/optix)
+
+**Purpose**: AI-accelerated denoising for rendered images  
+**License**: NVIDIA Software License Agreement  
+**Integration**: SDK headers and libraries linked via CMake  
+**Requirements**: NVIDIA GPU with RT cores (RTX 20-series or newer) and appropriate drivers  
+**Usage**: The OptiX AI denoiser is used to dramatically reduce noise in path traced images, enabling preview-quality results with minimal samples. Integrated through `optixDenoiser.cpp/h`.
 
 ## Performance Analysis
 
+### Stream Compaction
+
+![](img/sc-gr.png)
+
+### Material Sort
+
+![](img/mat-sort-g.png)
+
+### Russian Roulette
+
+![](img/rr-g.png)
+
+### BVH
+
+![](img/bvh-g.png)
 
 ## WIP Renders
 

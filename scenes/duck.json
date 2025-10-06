@@ -30,17 +30,10 @@
     },
     "EnvironmentMap":
     {
-        "FILE":"../envmaps/interior_atelier_soft_daylight.hdr",
+        "FILE":"../envmaps/christmas_photo_studio_07_4k.hdr",
         "INTENSITY":1.0
     },
     "Objects": [
-        {
-            "TYPE": "cube",
-            "MATERIAL": "light",
-            "TRANS": [11.71, 10.0, 13.22],
-            "ROTAT": [90.0, 0.0, -45.0],
-            "SCALE": [10.0, 0.1, 10.0]
-        },
         {
             "TYPE": "gltf",
             "FILE": "../gltf/Duck.glb",
